@@ -33,10 +33,8 @@ function insertBatch(db, count, offset) {
       db.insertMessage({
         id: uuidv7(),
         message: `general chatter filler words about agents and forums uniquetag${n}`,
-        createdAt: Date.now(),
         ip: '::1',
-        poster: 'poster0000',
-        replyTo: null,
+        poster: 'poster0000ab',
       });
     }
   } finally {

@@ -26,19 +26,21 @@ test('buildDocs reflects the given config into the endpoint descriptions and lim
   assert.equal(docs.version, '9.9.9');
   assert.equal(docs.limits.max_message_length, 2000);
   assert.ok(docs.endpoints['GET /']);
-  assert.ok(docs.endpoints['GET /post?message=<text>&reply_to=<optional>']);
-  assert.ok(Object.keys(docs.endpoints).some((k) => k.startsWith('GET /search?q=')));
+  assert.ok(docs.endpoints['GET /post?message=<text>']);
+  assert.ok(Object.keys(docs.endpoints).some((k) => k.startsWith('GET /search?q=') && k.includes('poster=')));
   assert.ok(docs.endpoints['GET /export']);
   assert.equal(docs.proof_of_work.algorithm, 'sha256');
   assert.match(docs.authorship, /sig/);
   assert.match(docs.privacy, /never included/);
+  assert.match(docs.threading, /reply_to/);
+  assert.match(docs.ids, /not separately stored/);
 });
 
 test('renderMessageJson exposes the public shape, including the pseudonymous poster hash but never the ip', () => {
   const shaped = renderMessageJson({
-    id: 'a', message: 'hi', created_at: 'x', reply_to: null, poster: 'abc123', ip: '1.2.3.4',
+    id: 'a', message: 'hi', created_at: 'x', poster: 'abc123', ip: '1.2.3.4',
   });
-  assert.deepEqual(shaped, { id: 'a', message: 'hi', created_at: 'x', reply_to: null, poster: 'abc123' });
+  assert.deepEqual(shaped, { id: 'a', message: 'hi', created_at: 'x', poster: 'abc123' });
 });
 
 const baseDocs = buildDocs({
@@ -58,13 +60,12 @@ test('renderHome embeds message metadata as HTML but never a raw message body', 
     docs: baseDocs,
     updatedAt: Date.now(),
     latest: [
-      { id: 'id-1', message: 'plain text', created_at: '2024-01-01T00:00:00.000Z', reply_to: null, poster: 'aaa111' },
-      { id: 'id-2', message: 'a reply', created_at: '2024-01-01T00:00:01.000Z', reply_to: '/m/id-1', poster: 'bbb222' },
+      { id: 'id-1', message: 'plain text', created_at: '2024-01-01T00:00:00.000Z', poster: 'aaa111' },
+      { id: 'id-2', message: 'a reply mentioning /m/id-1', created_at: '2024-01-01T00:00:01.000Z', poster: 'bbb222' },
     ],
   });
   assert.match(html, /<title>swarm-forum<\/title>/);
   assert.match(html, /id-1/);
-  assert.match(html, /re: \/m\/id-1/);
   assert.match(html, /poster:aaa111/);
   assert.match(html, /poster:bbb222/);
   // the body text never appears as literal markup content between the tags
@@ -77,7 +78,7 @@ test('renderHome never lets a message body break out of its inline <script> bloc
   const html = renderHome({
     docs: baseDocs,
     updatedAt: Date.now(),
-    latest: [{ id: 'id-x', message: malicious, created_at: '2024-01-01T00:00:00.000Z', reply_to: null, poster: 'ccc333' }],
+    latest: [{ id: 'id-x', message: malicious, created_at: '2024-01-01T00:00:00.000Z', poster: 'ccc333' }],
   });
 
   // Exactly the two legitimate <script> blocks (the app script) should

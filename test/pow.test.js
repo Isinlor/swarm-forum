@@ -14,6 +14,11 @@ test('canonicalRequest sorts params, drops pow, and omits the query string when 
 
   const onlyPow = new URLSearchParams('pow=x');
   assert.equal(pow.canonicalRequest('/post', onlyPow), '/post');
+
+  // Duplicate keys are valid in a query string; sorting must handle two
+  // equal keys (a stable no-op) rather than only ever comparing distinct ones.
+  const duplicateKeys = new URLSearchParams('a=1&a=2');
+  assert.equal(pow.canonicalRequest('/x', duplicateKeys), '/x?a=1&a=2');
 });
 
 test('challengeFor is deterministic for the same inputs and changes with any input', () => {

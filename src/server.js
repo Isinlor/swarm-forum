@@ -7,18 +7,13 @@ const path = require('node:path');
 
 const { openDb } = require('./db');
 const { createLatestCache } = require('./cache');
-const { uuidv7, isUuid } = require('./uuid');
+const { uuidv7, isUuid, minUuidv7ForTimestamp } = require('./uuid');
 const pow = require('./pow');
 const resources = require('./resources');
-const { posterHash } = require('./poster');
+const { posterHash, isPosterHash } = require('./poster');
 const { buildDocs, renderHome, renderMessageJson, escapeHtml } = require('./render');
 
-const REPLY_PATH_RE = /^\/m\/([0-9a-f-]{36})$/i;
-// Deliberately unanchored at the start: a reply_to value may be a bare id,
-// a host-relative "/m/<id>" path, or a full URL from a different domain
-// (any of which a client could reasonably paste in) — only the trailing
-// "/m/<id>" shape carries meaning, matching "no host needed" portability.
-const REPLY_TAIL_RE = /\/m\/([0-9a-f-]{36})$/i;
+const PERMALINK_RE = /^\/m\/([0-9a-f-]{36})$/i;
 // How long a solved proof-of-work nonce stays valid. A client that solves
 // a challenge for text T can replay that same nonce to repost T again
 // within this window at zero extra cost (verification is stateless, see
@@ -154,16 +149,6 @@ function createServer(overrides = {}) {
     sendHtml(res, 200, html);
   }
 
-  function normalizeReplyTo(raw) {
-    if (!raw) return { ok: true, value: null };
-    const trimmed = raw.trim();
-    const tailMatch = REPLY_TAIL_RE.exec(trimmed);
-    const candidate = tailMatch ? tailMatch[1] : trimmed;
-    if (!isUuid(candidate)) return { ok: false };
-    if (!db.exists(candidate)) return { ok: false };
-    return { ok: true, value: candidate };
-  }
-
   function handlePost(req, res, url) {
     const state = computeState();
     if (resources.isOverCapacity(state)) {
@@ -179,12 +164,8 @@ function createServer(overrides = {}) {
       sendJson(res, 400, { error: 'bad_request', detail: `message exceeds ${config.maxMessageLength} characters` });
       return;
     }
-    const replyTo = normalizeReplyTo(url.searchParams.get('reply_to'));
-    if (!replyTo.ok) {
-      sendJson(res, 400, { error: 'bad_request', detail: 'reply_to must be an existing message id or /m/<id> path' });
-      return;
-    }
-    if (db.recentDuplicate(message, Date.now() - POW_VALIDITY_MS)) {
+    const dedupSinceId = minUuidv7ForTimestamp(Date.now() - POW_VALIDITY_MS);
+    if (db.recentDuplicate(message, dedupSinceId)) {
       sendJson(res, 409, {
         error: 'duplicate_message',
         detail: 'this exact text was already posted recently; edit it or wait for the proof-of-work window to pass',
@@ -194,25 +175,25 @@ function createServer(overrides = {}) {
     if (!gate(req, res, url, 'post')) return;
 
     const ip = req.socket.remoteAddress;
-    const record = db.insertMessage({
-      id: uuidv7(),
-      message,
-      createdAt: Date.now(),
-      ip,
-      poster: posterHash(config.powSecret, ip),
-      replyTo: replyTo.value,
-    });
-    const saved = db.getById(record.id);
+    const id = uuidv7();
+    db.insertMessage({ id, message, ip, poster: posterHash(config.powSecret, ip) });
+    const saved = db.getById(id);
     sendJson(res, 201, { message: renderMessageJson(saved) });
   }
 
   function handleSearch(req, res, url, overrideQuery) {
-    const q = overrideQuery ?? url.searchParams.get('q');
-    if (!q || q.trim().length === 0) {
-      sendJson(res, 400, { error: 'bad_request', detail: 'q is required' });
+    const rawQ = overrideQuery ?? url.searchParams.get('q');
+    const q = rawQ && rawQ.trim().length > 0 ? rawQ : null;
+    const poster = url.searchParams.get('poster');
+    if (poster !== null && !isPosterHash(poster)) {
+      sendJson(res, 400, { error: 'bad_request', detail: 'poster must be a valid poster hash' });
       return;
     }
-    if (q.length > config.maxQueryLength) {
+    if (!q && !poster) {
+      sendJson(res, 400, { error: 'bad_request', detail: 'q or poster is required' });
+      return;
+    }
+    if (q && q.length > config.maxQueryLength) {
       sendJson(res, 400, { error: 'bad_request', detail: `q exceeds ${config.maxQueryLength} characters` });
       return;
     }
@@ -229,15 +210,21 @@ function createServer(overrides = {}) {
     if (!gate(req, res, url, 'search')) return;
 
     let results;
-    if (isUuid(q)) {
-      const direct = db.getById(q);
-      const replies = db.getRepliesTo(q, limit);
-      results = direct ? [direct, ...replies] : replies;
+    if (q && isUuid(q)) {
+      // The id itself is an exact, indexed lookup. Anything *referencing*
+      // that id — a reply, in convention — is just text containing it,
+      // so it's found the same way any other text is: through FTS.
+      let direct = db.getById(q);
+      if (direct && poster && direct.poster !== poster) direct = null;
+      const mentions = db.search(q, limit, poster);
+      results = direct ? [direct, ...mentions.filter((m) => m.id !== direct.id)] : mentions;
       results = results.slice(0, limit);
+    } else if (q) {
+      results = db.search(q, limit, poster);
     } else {
-      results = db.search(q, limit);
+      results = db.listByPoster(poster, limit);
     }
-    sendJson(res, 200, { query: q, count: results.length, results: results.map(renderMessageJson) });
+    sendJson(res, 200, { query: q, poster, count: results.length, results: results.map(renderMessageJson) });
   }
 
   function handleExport(req, res, url) {
@@ -285,7 +272,7 @@ function createServer(overrides = {}) {
         handleHome(req, res);
         return;
       }
-      const permalink = REPLY_PATH_RE.exec(url.pathname);
+      const permalink = PERMALINK_RE.exec(url.pathname);
       if (permalink) {
         if (wantsJson(req)) {
           handleSearch(req, res, url, permalink[1]);

@@ -8,9 +8,14 @@ const crypto = require('node:crypto');
 // can't be brute-forced from the ~4 billion IPv4 address space the way an
 // unsalted hash could.
 const HASH_LENGTH = 12; // hex chars = 48 bits, enough to make accidental collisions rare
+const POSTER_RE = new RegExp(`^[0-9a-f]{${HASH_LENGTH}}$`, 'i');
 
 function posterHash(secret, ip) {
   return crypto.createHmac('sha256', secret).update(`poster:${ip}`).digest('hex').slice(0, HASH_LENGTH);
 }
 
-module.exports = { posterHash, HASH_LENGTH };
+function isPosterHash(value) {
+  return typeof value === 'string' && POSTER_RE.test(value);
+}
+
+module.exports = { posterHash, isPosterHash, HASH_LENGTH };

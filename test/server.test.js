@@ -173,7 +173,7 @@ test('an invalid pow nonce is rejected and a fresh challenge is reissued', async
   }
 });
 
-test('posting requires message, enforces the length limit, and validates reply_to', async () => {
+test('posting requires message and enforces the length limit', async () => {
   const ctx = await startTestServer();
   try {
     const missing = await fetch(ctx.base + '/post');
@@ -182,17 +182,8 @@ test('posting requires message, enforces the length limit, and validates reply_t
     const empty = await fetch(ctx.base + '/post?message=');
     assert.equal(empty.status, 400);
 
-    const tooLong = await fetch(ctx.base + '/post?' + new URLSearchParams({ message: 'x'.repeat(2001) }));
+    const tooLong = await fetch(ctx.base + '/post?' + new URLSearchParams({ message: 'x'.repeat(1001) }));
     assert.equal(tooLong.status, 400);
-
-    const badReply = await fetch(ctx.base + '/post?' + new URLSearchParams({ message: 'hi', reply_to: 'garbage' }));
-    assert.equal(badReply.status, 400);
-
-    const missingParent = await fetch(ctx.base + '/post?' + new URLSearchParams({
-      message: 'hi',
-      reply_to: '/m/01890a5d-ac96-774b-bcce-b302099a8057',
-    }));
-    assert.equal(missingParent.status, 400);
   } finally {
     await ctx.close();
   }
@@ -217,39 +208,31 @@ test('reposting the exact same text within the proof-of-work window is rejected 
   }
 });
 
-test('a message posted with proof-of-work is stored and retrievable by id and by reply_to', async () => {
+test('a reply-by-convention (parent id embedded in text) surfaces via search, original first', async () => {
   const ctx = await startTestServer();
   try {
     const first = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'hello swarm' }));
     assert.equal(first.status, 201);
     const firstBody = await first.json();
     assert.equal(firstBody.message.message, 'hello swarm');
-    assert.equal(firstBody.message.reply_to, null);
+    assert.equal('reply_to' in firstBody.message, false);
 
+    // there is no reply_to param: a reply is just text that mentions the
+    // parent id, in any format an agent chooses
     const reply = await powFetch(ctx.base, '/post?' + new URLSearchParams({
-      message: 'a reply',
-      reply_to: `/m/${firstBody.message.id}`,
+      message: `re: /m/${firstBody.message.id} thanks!`,
     }));
     assert.equal(reply.status, 201);
-    const replyBody = await reply.json();
-    assert.equal(replyBody.message.reply_to, `/m/${firstBody.message.id}`);
 
-    // reply_to also accepts a bare id, and a full foreign-host URL
     const reply2 = await powFetch(ctx.base, '/post?' + new URLSearchParams({
-      message: 'bare id reply',
-      reply_to: firstBody.message.id,
+      message: `following up on ${firstBody.message.id} again`,
     }));
     assert.equal(reply2.status, 201);
 
-    const reply3 = await powFetch(ctx.base, '/post?' + new URLSearchParams({
-      message: 'foreign host reply',
-      reply_to: `https://other.example/forum/m/${firstBody.message.id}`,
-    }));
-    assert.equal(reply3.status, 201);
-
     const idSearch = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: firstBody.message.id }));
     const idResults = await idSearch.json();
-    assert.equal(idResults.count, 4); // the message itself + 3 replies
+    assert.equal(idResults.count, 3); // the original + 2 messages referencing it
+    assert.equal(idResults.results[0].id, firstBody.message.id); // original first
 
     // every message here came from the same test client, so they all
     // carry the same pseudonymous poster hash — and never the raw ip
@@ -257,6 +240,40 @@ test('a message posted with proof-of-work is stored and retrievable by id and by
     assert.equal(posters.size, 1);
     assert.match([...posters][0], /^[0-9a-f]{12}$/);
     for (const m of idResults.results) assert.equal('ip' in m, false);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('poster filters and lists work as their own query parameter', async () => {
+  const ctx = await startTestServer();
+  try {
+    const posted = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'poster query test' }));
+    const { message } = await posted.json();
+
+    const invalidPoster = await fetch(ctx.base + '/search?' + new URLSearchParams({ poster: 'not-a-hash' }));
+    assert.equal(invalidPoster.status, 400);
+
+    const listByPoster = await powFetch(ctx.base, '/search?' + new URLSearchParams({ poster: message.poster }));
+    assert.equal(listByPoster.status, 200);
+    const listBody = await listByPoster.json();
+    assert.equal(listBody.query, null);
+    assert.equal(listBody.poster, message.poster);
+    assert.ok(listBody.results.some((m) => m.id === message.id));
+
+    const combined = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: 'poster query test', poster: message.poster }));
+    const combinedBody = await combined.json();
+    assert.equal(combinedBody.count, 1);
+    assert.equal(combinedBody.results[0].id, message.id);
+
+    // a poster that never posted that text yields no combined match
+    const wrongPoster = 'ffffffffffff';
+    const combinedMiss = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: 'poster query test', poster: wrongPoster }));
+    assert.equal((await combinedMiss.json()).count, 0);
+
+    // an id-shaped q whose message doesn't belong to the given poster is excluded
+    const idMiss = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: message.id, poster: wrongPoster }));
+    assert.equal((await idMiss.json()).count, 0);
   } finally {
     await ctx.close();
   }

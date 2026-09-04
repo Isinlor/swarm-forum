@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { openDb, toFtsQuery } = require('../src/db');
-const { uuidv7 } = require('../src/uuid');
+const { uuidv7, minUuidv7ForTimestamp } = require('../src/uuid');
 
 function withDb(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-db-'));
@@ -26,14 +26,15 @@ test('toFtsQuery tokenizes, quotes, and ANDs terms; empty input yields null', ()
   assert.equal(toFtsQuery('!!!'), null);
 });
 
-test('insertMessage + getById round-trips a message, including nested data dirs', () => {
+test('insertMessage + getById round-trips a message, deriving created_at from the id', () => {
   withDb((db) => {
-    const id = uuidv7();
-    db.insertMessage({ id, message: 'hello there', createdAt: Date.parse('2024-01-01T00:00:00Z'), ip: '127.0.0.1', poster: 'poster0000', replyTo: null });
+    const ts = Date.parse('2024-01-01T00:00:00Z');
+    const id = uuidv7(ts);
+    db.insertMessage({ id, message: 'hello there', ip: '127.0.0.1', poster: 'poster0000ab' });
     const found = db.getById(id);
     assert.equal(found.id, id);
     assert.equal(found.message, 'hello there');
-    assert.equal(found.reply_to, null);
+    assert.equal(found.poster, 'poster0000ab');
     assert.equal(found.created_at, '2024-01-01T00:00:00.000Z');
   });
 });
@@ -48,58 +49,37 @@ test('exists reflects presence', () => {
   withDb((db) => {
     const id = uuidv7();
     assert.equal(db.exists(id), false);
-    db.insertMessage({ id, message: 'hi', createdAt: Date.now(), ip: '::1', poster: 'poster0000', replyTo: null });
+    db.insertMessage({ id, message: 'hi', ip: '::1', poster: 'poster0000ab' });
     assert.equal(db.exists(id), true);
   });
 });
 
-test('reply_to is exposed as a host-free /m/<id> path', () => {
+test('listByPoster returns only that poster\'s messages, most recent first, respecting the limit', () => {
   withDb((db) => {
-    const parent = uuidv7();
-    db.insertMessage({ id: parent, message: 'parent', createdAt: Date.now(), ip: '::1', poster: 'poster0000', replyTo: null });
-    const child = uuidv7();
-    db.insertMessage({ id: child, message: 'child', createdAt: Date.now() + 1, ip: '::1', poster: 'poster0000', replyTo: parent });
-    const found = db.getById(child);
-    assert.equal(found.reply_to, `/m/${parent}`);
-  });
-});
-
-test('getRepliesTo returns replies oldest-first, respecting the limit', () => {
-  withDb((db) => {
-    const parent = uuidv7();
-    db.insertMessage({ id: parent, message: 'parent', createdAt: 1000, ip: '::1', poster: 'poster0000', replyTo: null });
     const ids = [];
     for (let i = 0; i < 3; i += 1) {
-      const id = uuidv7();
+      const id = uuidv7(1000 + i);
       ids.push(id);
-      db.insertMessage({ id, message: `reply ${i}`, createdAt: 2000 + i, ip: '::1', poster: 'poster0000', replyTo: parent });
+      db.insertMessage({ id, message: `m${i}`, ip: '::1', poster: 'aaaaaaaaaaaa' });
     }
-    const replies = db.getRepliesTo(parent, 2);
-    assert.equal(replies.length, 2);
-    assert.equal(replies[0].id, ids[0]);
-    assert.equal(replies[1].id, ids[1]);
-  });
-});
+    db.insertMessage({ id: uuidv7(2000), message: 'other poster', ip: '::1', poster: 'bbbbbbbbbbbb' });
 
-test('latest orders newest-first and respects the limit', () => {
-  withDb((db) => {
-    const ids = [];
-    for (let i = 0; i < 5; i += 1) {
-      const id = uuidv7();
-      ids.push(id);
-      db.insertMessage({ id, message: `m${i}`, createdAt: 1000 + i, ip: '::1', poster: 'poster0000', replyTo: null });
-    }
-    const latest = db.latest(3);
-    assert.equal(latest.length, 3);
-    assert.deepEqual(latest.map((m) => m.id), [ids[4], ids[3], ids[2]]);
+    const all = db.listByPoster('aaaaaaaaaaaa', 10);
+    assert.deepEqual(all.map((m) => m.id), [ids[2], ids[1], ids[0]]);
+    assert.ok(all.every((m) => m.poster === 'aaaaaaaaaaaa'));
+
+    const limited = db.listByPoster('aaaaaaaaaaaa', 2);
+    assert.equal(limited.length, 2);
+
+    assert.deepEqual(db.listByPoster('cccccccccccc', 10), []);
   });
 });
 
 test('count reflects the number of stored messages', () => {
   withDb((db) => {
     assert.equal(db.count(), 0);
-    db.insertMessage({ id: uuidv7(), message: 'x', createdAt: Date.now(), ip: '::1', poster: 'poster0000', replyTo: null });
-    db.insertMessage({ id: uuidv7(), message: 'y', createdAt: Date.now(), ip: '::1', poster: 'poster0000', replyTo: null });
+    db.insertMessage({ id: uuidv7(), message: 'x', ip: '::1', poster: 'poster0000ab' });
+    db.insertMessage({ id: uuidv7(), message: 'y', ip: '::1', poster: 'poster0000ab' });
     assert.equal(db.count(), 2);
   });
 });
@@ -107,9 +87,9 @@ test('count reflects the number of stored messages', () => {
 test('search finds messages containing all query tokens regardless of order', () => {
   withDb((db) => {
     const a = uuidv7();
-    db.insertMessage({ id: a, message: 'the quick brown fox', createdAt: 1000, ip: '::1', poster: 'poster0000', replyTo: null });
+    db.insertMessage({ id: a, message: 'the quick brown fox', ip: '::1', poster: 'poster0000ab' });
     const b = uuidv7();
-    db.insertMessage({ id: b, message: 'lazy dog sleeps', createdAt: 1001, ip: '::1', poster: 'poster0000', replyTo: null });
+    db.insertMessage({ id: b, message: 'lazy dog sleeps', ip: '::1', poster: 'poster0000ab' });
 
     const results = db.search('brown quick');
     assert.equal(results.length, 1);
@@ -119,14 +99,42 @@ test('search finds messages containing all query tokens regardless of order', ()
   });
 });
 
+test('search accepts a poster filter, restricting matches to that poster', () => {
+  withDb((db) => {
+    const a = uuidv7();
+    db.insertMessage({ id: a, message: 'shared keyword from alice', ip: '::1', poster: 'aaaaaaaaaaaa' });
+    const b = uuidv7();
+    db.insertMessage({ id: b, message: 'shared keyword from bob', ip: '::1', poster: 'bbbbbbbbbbbb' });
+
+    const unfiltered = db.search('shared keyword');
+    assert.equal(unfiltered.length, 2);
+
+    const filtered = db.search('shared keyword', 20, 'aaaaaaaaaaaa');
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].id, a);
+  });
+});
+
 test('search with a query that tokenizes to nothing returns no results', () => {
   withDb((db) => {
-    db.insertMessage({ id: uuidv7(), message: 'hello', createdAt: 1000, ip: '::1', poster: 'poster0000', replyTo: null });
+    db.insertMessage({ id: uuidv7(), message: 'hello', ip: '::1', poster: 'poster0000ab' });
     assert.deepEqual(db.search('!!!'), []);
   });
 });
 
-test('fileSizeBytes reports 0 before the file exists in this session and >0 after writes', () => {
+test('recentDuplicate finds identical text at or after the cutoff id, ignores different text and older ids', () => {
+  withDb((db) => {
+    const now = Date.now();
+    const id = uuidv7(now);
+    db.insertMessage({ id, message: 'repeat me', ip: '::1', poster: 'poster0000ab' });
+
+    assert.equal(db.recentDuplicate('repeat me', minUuidv7ForTimestamp(now - 1000)), true);
+    assert.equal(db.recentDuplicate('repeat me', minUuidv7ForTimestamp(now + 1000)), false);
+    assert.equal(db.recentDuplicate('different text', minUuidv7ForTimestamp(now - 1000)), false);
+  });
+});
+
+test('fileSizeBytes reports the on-disk size, and 0 once the file is gone', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-db-size-'));
   const file = path.join(dir, 'x.db');
   const db = openDb(file);
