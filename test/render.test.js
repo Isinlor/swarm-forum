@@ -10,30 +10,35 @@ test('escapeHtml neutralizes every HTML-significant character', () => {
   assert.equal(escapeHtml(42), '42');
 });
 
+const config = {
+  version: '9.9.9',
+  latestLimit: 100,
+  cacheIntervalMs: 5000,
+  maxMessageBytes: 2048,
+  maxQueryLength: 200,
+  resultLimit: 100,
+  powWindowSeconds: 270,
+  baseDifficulty: { search: 14, post: 17 },
+  maxDifficulty: { search: 18, post: 21 },
+};
+
 test('buildDocs reflects the given config into the endpoint descriptions and limits', () => {
-  const docs = buildDocs({
-    version: '9.9.9',
-    latestLimit: 100,
-    cacheIntervalMs: 5000,
-    maxMessageLength: 2000,
-    maxQueryLength: 200,
-    searchLimitDefault: 20,
-    searchLimitMax: 100,
-    powWindowSeconds: 270,
-    baseDifficulty: { search: 14, post: 18, export: 22 },
-  });
+  const docs = buildDocs(config);
   assert.equal(docs.name, 'swarm-forum');
   assert.equal(docs.version, '9.9.9');
-  assert.equal(docs.limits.max_message_length, 2000);
+  assert.equal(docs.limits.max_message_bytes, 2048);
+  assert.equal(docs.limits.result_limit, 100);
   assert.ok(docs.endpoints['GET /']);
   assert.ok(docs.endpoints['GET /post?message=<text>']);
-  assert.ok(Object.keys(docs.endpoints).some((k) => k.startsWith('GET /search?q=') && k.includes('poster=')));
-  assert.ok(docs.endpoints['GET /export']);
+  assert.ok(Object.keys(docs.endpoints).some((k) => k.startsWith('GET /search?q=') && k.includes('poster=') && k.includes('before=')));
+  assert.equal(docs.endpoints['GET /export'], undefined);
   assert.equal(docs.proof_of_work.algorithm, 'sha256');
+  assert.deepEqual(docs.proof_of_work.max_difficulty, config.maxDifficulty);
   assert.match(docs.authorship, /sig/);
-  assert.match(docs.privacy, /never included/);
+  assert.match(docs.privacy, /never written to disk/);
   assert.match(docs.threading, /reply_to/);
   assert.match(docs.ids, /not separately stored/);
+  assert.match(docs.performance, /poster/);
 });
 
 test('renderMessageJson exposes the public shape, including the pseudonymous poster hash but never the ip', () => {
@@ -43,17 +48,7 @@ test('renderMessageJson exposes the public shape, including the pseudonymous pos
   assert.deepEqual(shaped, { id: 'a', message: 'hi', created_at: 'x', poster: 'abc123' });
 });
 
-const baseDocs = buildDocs({
-  version: '1.0.0',
-  latestLimit: 100,
-  cacheIntervalMs: 5000,
-  maxMessageLength: 2000,
-  maxQueryLength: 200,
-  searchLimitDefault: 20,
-  searchLimitMax: 100,
-  powWindowSeconds: 270,
-  baseDifficulty: { search: 14, post: 18, export: 22 },
-});
+const baseDocs = buildDocs(config);
 
 test('renderHome embeds message metadata as HTML but never a raw message body', () => {
   const html = renderHome({
@@ -71,9 +66,21 @@ test('renderHome embeds message metadata as HTML but never a raw message body', 
   // the body text never appears as literal markup content between the tags
   assert.doesNotMatch(html, /<div class="msg-body">plain text<\/div>/);
   assert.match(html, /<div class="msg-body"><\/div>/);
+  // no inline executable script anywhere — only the JSON data island and
+  // an external, CSP-friendly <script src>
+  assert.match(html, /<script src="\/client\.js"><\/script>/);
+  assert.doesNotMatch(html, /<script>[\s\S]/);
 });
 
-test('renderHome never lets a message body break out of its inline <script> block', () => {
+test('renderHome adds a canonical link when a permalink path is given', () => {
+  const withCanonical = renderHome({ docs: baseDocs, updatedAt: Date.now(), latest: [], canonicalPath: '/m/some-id' });
+  assert.match(withCanonical, /<link rel="canonical" href="\/m\/some-id">/);
+
+  const without = renderHome({ docs: baseDocs, updatedAt: Date.now(), latest: [] });
+  assert.doesNotMatch(without, /rel="canonical"/);
+});
+
+test('renderHome never lets a message body break out of its JSON data island', () => {
   const malicious = '</script><script>window.pwned = true;</script>';
   const html = renderHome({
     docs: baseDocs,
@@ -81,15 +88,15 @@ test('renderHome never lets a message body break out of its inline <script> bloc
     latest: [{ id: 'id-x', message: malicious, created_at: '2024-01-01T00:00:00.000Z', poster: 'ccc333' }],
   });
 
-  // Exactly the two legitimate <script> blocks (the app script) should
-  // exist; the malicious payload must not have introduced new tag
-  // boundaries in the raw HTML.
+  // Exactly the two legitimate <script> tags (the JSON island + the
+  // external app script) should exist; the malicious payload must not
+  // have introduced new tag boundaries in the raw HTML.
   const scriptOpenCount = (html.match(/<script/g) || []).length;
   const scriptCloseCount = (html.match(/<\/script>/g) || []).length;
-  assert.equal(scriptOpenCount, 1);
-  assert.equal(scriptCloseCount, 1);
+  assert.equal(scriptOpenCount, 2);
+  assert.equal(scriptCloseCount, 2);
 
-  const bodiesMatch = /window\.__MESSAGE_BODIES__ = (\{.*?\});/s.exec(html);
+  const bodiesMatch = /<script type="application\/json" id="message-bodies">(\{.*?\})<\/script>/s.exec(html);
   assert.ok(bodiesMatch, 'expected to find the embedded body map');
   const parsed = JSON.parse(bodiesMatch[1]);
   assert.equal(parsed['id-x'], malicious);

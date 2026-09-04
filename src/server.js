@@ -11,9 +11,34 @@ const { uuidv7, isUuid, minUuidv7ForTimestamp } = require('./uuid');
 const pow = require('./pow');
 const resources = require('./resources');
 const { posterHash, isPosterHash } = require('./poster');
+const { loadOrCreateSecret } = require('./secret');
+const { clientIp } = require('./ip');
+const { createRequestRateTracker } = require('./rate');
 const { buildDocs, renderHome, renderMessageJson, escapeHtml } = require('./render');
 
 const PERMALINK_RE = /^\/m\/([0-9a-f-]{36})$/i;
+const STATIC_FILES = {
+  '/client.js': { path: path.join(__dirname, 'public', 'client.js'), type: 'text/javascript; charset=utf-8' },
+  '/pow-worker.js': { path: path.join(__dirname, 'public', 'pow-worker.js'), type: 'text/javascript; charset=utf-8' },
+  '/sha256.js': { path: path.join(__dirname, 'sha256.js'), type: 'text/javascript; charset=utf-8' },
+};
+const STATIC_FILE_CONTENTS = Object.fromEntries(
+  Object.entries(STATIC_FILES).map(([route, { path: filePath, type }]) => [
+    route,
+    { body: fs.readFileSync(filePath, 'utf8'), type },
+  ]),
+);
+// worker-src 'self': the PoW worker is a same-origin file (/pow-worker.js
+// importScripts()-ing /sha256.js), not a blob: URL, so no relaxation of
+// the default script-loading rules is needed beyond same-origin.
+// style-src allows 'unsafe-inline' because the page's CSS lives in one
+// inline <style> block rather than a separate file — inline *styles*
+// don't get the same allowance in this policy as inline *scripts* would
+// (which stay forbidden): a CSS injection is a much weaker primitive
+// than script execution, and no user content is ever written into style
+// context here.
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+  "object-src 'none'; base-uri 'none'; worker-src 'self'";
 // How long a solved proof-of-work nonce stays valid. A client that solves
 // a challenge for text T can replay that same nonce to repost T again
 // within this window at zero extra cost (verification is stateless, see
@@ -36,57 +61,86 @@ function loadConfig(overrides = {}) {
     dataDir,
     dbFile: overrides.dbFile || path.join(dataDir, 'swarm-forum.db'),
     powSecret: overrides.powSecret || env.POW_SECRET || crypto.randomBytes(32).toString('hex'),
-    maxMessageLength: num('maxMessageLength', num('MAX_MESSAGE_LENGTH', 1000)),
+    // Unlike powSecret, this has no in-process fallback: it must survive
+    // restarts (rotating it reassigns every poster hash on the board), so
+    // when it isn't explicitly provided, createServer loads or creates a
+    // persisted one from disk (see secret.js) rather than generating a
+    // fresh, unpersisted one here.
+    posterSecret: overrides.posterSecret || env.POSTER_SECRET || null,
+    trustProxyHops: num('trustProxyHops', num('TRUST_PROXY_HOPS', 0)),
+    maxMessageBytes: num('maxMessageBytes', num('MAX_MESSAGE_BYTES', 2048)),
     maxQueryLength: num('maxQueryLength', num('MAX_QUERY_LENGTH', 200)),
-    searchLimitDefault: num('searchLimitDefault', num('SEARCH_LIMIT_DEFAULT', 20)),
-    searchLimitMax: num('searchLimitMax', num('SEARCH_LIMIT_MAX', 100)),
+    resultLimit: num('resultLimit', num('RESULT_LIMIT', 100)),
     latestLimit: num('latestLimit', num('LATEST_LIMIT', 100)),
     cacheIntervalMs: num('cacheIntervalMs', num('CACHE_INTERVAL_MS', 5000)),
     maxDbSizeBytes: num('maxDbSizeBytes', num('MAX_DB_SIZE_BYTES', 500 * 1024 * 1024)),
     minFreeBytes: num('minFreeBytes', num('MIN_FREE_BYTES', 1024 * 1024 * 1024)),
-    exportSizeReferenceBytes: num('exportSizeReferenceBytes', num('EXPORT_SIZE_REFERENCE_BYTES', 10 * 1024 * 1024)),
+    targetRequestsPerSecond: num('targetRequestsPerSecond', num('TARGET_REQUESTS_PER_SECOND', 5)),
     baseDifficulty: overrides.baseDifficulty || {
       search: num('baseDifficultySearch', num('BASE_DIFFICULTY_SEARCH', resources.BASE_DIFFICULTY.search)),
       post: num('baseDifficultyPost', num('BASE_DIFFICULTY_POST', resources.BASE_DIFFICULTY.post)),
-      export: num('baseDifficultyExport', num('BASE_DIFFICULTY_EXPORT', resources.BASE_DIFFICULTY.export)),
+    },
+    maxDifficulty: overrides.maxDifficulty || {
+      search: num('maxDifficultySearch', num('MAX_DIFFICULTY_SEARCH', resources.MAX_DIFFICULTY.search)),
+      post: num('maxDifficultyPost', num('MAX_DIFFICULTY_POST', resources.MAX_DIFFICULTY.post)),
     },
   };
 }
 
-function sendJson(res, status, body) {
+function sendJson(res, status, body, cacheControl = 'no-store') {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(payload),
-    'Cache-Control': 'no-store',
+    'Cache-Control': cacheControl,
   });
   res.end(payload);
 }
 
-function sendHtml(res, status, html) {
+function sendHtml(res, status, html, cacheControl = 'no-store') {
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': Buffer.byteLength(html),
-    'Cache-Control': 'no-store',
+    'Cache-Control': cacheControl,
+    'Content-Security-Policy': CSP,
   });
   res.end(html);
 }
 
-function wantsJson(req) {
-  const accept = req.headers.accept || '';
-  return accept.includes('application/json') && !accept.includes('text/html');
+// Agents are the primary audience, and every HTTP client defaults to
+// `Accept: */*` (or sends nothing) unless told otherwise — only an actual
+// browser sends a literal `text/html`. So JSON is the default; HTML is
+// the special case that has to ask for itself explicitly.
+function wantsHtml(req) {
+  return (req.headers.accept || '').includes('text/html');
+}
+
+/** Runs `fn` at most once per `ttlMs`, returning the cached value
+ * otherwise — used to keep the O(1)-per-request resource-pressure read
+ * from becoming a syscall-per-request one. */
+function memoize(fn, ttlMs) {
+  let cached;
+  let cachedAt = 0;
+  return () => {
+    const now = Date.now();
+    if (cachedAt === 0 || now - cachedAt >= ttlMs) {
+      cached = fn();
+      cachedAt = now;
+    }
+    return cached;
+  };
 }
 
 /** Caches the difficulty computed for a given (endpoint, time-window)
  * pair, so a client that receives a 402 and one that later verifies its
  * solved nonce are always judged against the same number, even though
  * live resource pressure keeps moving. Bounded size, no disk usage. */
-function createDifficultyTracker(computeState, baseDifficulty) {
+function createDifficultyTracker(computeState, baseDifficulty, maxDifficulty) {
   const cache = new Map();
-  return function difficultyForSlot(endpoint, slot, extraBits = 0) {
+  return function difficultyForSlot(endpoint, slot) {
     const key = `${endpoint}:${slot}`;
     if (cache.has(key)) return cache.get(key);
-    const value = resources.computeDifficulty(endpoint, computeState(), baseDifficulty) + extraBits;
+    const value = resources.computeDifficulty(endpoint, computeState(), baseDifficulty, maxDifficulty);
     cache.set(key, value);
     if (cache.size > 64) cache.delete(cache.keys().next().value);
     return value;
@@ -95,36 +149,54 @@ function createDifficultyTracker(computeState, baseDifficulty) {
 
 function createServer(overrides = {}) {
   const config = loadConfig(overrides);
+  if (!config.posterSecret) {
+    const secretFile = path.join(config.dataDir, '.poster-secret');
+    const { secret, generated } = loadOrCreateSecret(secretFile);
+    config.posterSecret = secret;
+    if (generated) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `swarm-forum: generated a new poster secret at ${secretFile}. If you run more than one ` +
+        'instance, set POSTER_SECRET to the same value on all of them so poster hashes agree.',
+      );
+    }
+  }
+
   const db = openDb(config.dbFile);
   const cache = createLatestCache(db, { intervalMs: config.cacheIntervalMs, limit: config.latestLimit });
+  const rateTracker = createRequestRateTracker();
 
-  const computeState = () => resources.currentState({
+  const computeState = memoize(() => resources.currentState({
     dbSizeBytes: db.fileSizeBytes(),
     maxDbSizeBytes: config.maxDbSizeBytes,
     dataDir: config.dataDir,
     minFreeBytes: config.minFreeBytes,
-  });
+    loadRatio: rateTracker.ratePerSecond() / config.targetRequestsPerSecond,
+  }), 1000);
 
-  const difficultyForSlot = createDifficultyTracker(computeState, config.baseDifficulty);
+  const difficultyForSlot = createDifficultyTracker(computeState, config.baseDifficulty, config.maxDifficulty);
 
   const docs = () => buildDocs({
     version: require('../package.json').version,
     latestLimit: config.latestLimit,
     cacheIntervalMs: config.cacheIntervalMs,
-    maxMessageLength: config.maxMessageLength,
+    maxMessageBytes: config.maxMessageBytes,
     maxQueryLength: config.maxQueryLength,
-    searchLimitDefault: config.searchLimitDefault,
-    searchLimitMax: config.searchLimitMax,
+    resultLimit: config.resultLimit,
     powWindowSeconds: Math.round(POW_VALIDITY_MS / 1000),
     baseDifficulty: config.baseDifficulty,
+    maxDifficulty: config.maxDifficulty,
   });
 
   /** Returns true (request may proceed) once a valid proof is present;
-   * otherwise sends a 402 challenge and returns false. */
-  function gate(req, res, url, endpoint, extraBits = 0) {
+   * otherwise sends a 402 challenge and returns false. This is always
+   * the first real work either handler below does — before any
+   * validation or database access — so an unauthenticated request never
+   * costs the server anything beyond reading its own query string. */
+  function gate(req, res, url, endpoint) {
     const now = Date.now();
     const nonce = url.searchParams.get('pow');
-    const slotFn = (slot) => difficultyForSlot(endpoint, slot, extraBits);
+    const slotFn = (slot) => difficultyForSlot(endpoint, slot);
     if (nonce && pow.verifyProof(config.powSecret, url.pathname, url.searchParams, nonce, slotFn, now)) {
       return true;
     }
@@ -135,33 +207,60 @@ function createServer(overrides = {}) {
     return false;
   }
 
+  const homeCacheControl = () => `public, max-age=${Math.round(config.cacheIntervalMs / 1000)}, stale-while-revalidate=30`;
+
   function handleHome(req, res) {
     const snapshot = cache.get();
-    if (wantsJson(req)) {
+    if (!wantsHtml(req)) {
       sendJson(res, 200, {
         ...docs(),
         updated_at: new Date(snapshot.updatedAt).toISOString(),
         latest_messages: snapshot.messages.map(renderMessageJson),
-      });
+      }, homeCacheControl());
       return;
     }
     const html = renderHome({ docs: docs(), latest: snapshot.messages, updatedAt: snapshot.updatedAt });
+    sendHtml(res, 200, html, homeCacheControl());
+  }
+
+  function handlePermalinkHtml(res, id) {
+    const message = db.getById(id);
+    if (!message) {
+      sendJson(res, 404, { error: 'not_found', detail: 'no such message' });
+      return;
+    }
+    const html = renderHome({
+      docs: docs(),
+      latest: [message],
+      updatedAt: Date.now(),
+      canonicalPath: `/m/${id}`,
+    });
     sendHtml(res, 200, html);
   }
 
   function handlePost(req, res, url) {
-    const state = computeState();
-    if (resources.isOverCapacity(state)) {
+    // A cheap, cached read — refusing outright when the board is over
+    // capacity costs nothing worth gating, so it can run ahead of gate().
+    if (resources.isOverCapacity(computeState())) {
       sendJson(res, 507, { error: 'insufficient_storage', detail: 'the board is at capacity; try again later' });
       return;
     }
+    if (!gate(req, res, url, 'post')) return;
+
     const message = url.searchParams.get('message');
     if (!message || message.length === 0) {
       sendJson(res, 400, { error: 'bad_request', detail: 'message is required' });
       return;
     }
-    if ([...message].length > config.maxMessageLength) {
-      sendJson(res, 400, { error: 'bad_request', detail: `message exceeds ${config.maxMessageLength} characters` });
+    // Belt check ahead of the precise byte count: an encoded query string
+    // wildly out of proportion to the byte budget it could legitimately
+    // encode isn't worth decoding further.
+    if (url.search.length > config.maxMessageBytes * 3 + 64) {
+      sendJson(res, 400, { error: 'bad_request', detail: 'request too large' });
+      return;
+    }
+    if (Buffer.byteLength(message, 'utf8') > config.maxMessageBytes) {
+      sendJson(res, 400, { error: 'bad_request', detail: `message exceeds ${config.maxMessageBytes} bytes` });
       return;
     }
     const dedupSinceId = minUuidv7ForTimestamp(Date.now() - POW_VALIDITY_MS);
@@ -172,42 +271,38 @@ function createServer(overrides = {}) {
       });
       return;
     }
-    if (!gate(req, res, url, 'post')) return;
 
-    const ip = req.socket.remoteAddress;
+    const ip = clientIp(req, config.trustProxyHops);
     const id = uuidv7();
-    db.insertMessage({ id, message, ip, poster: posterHash(config.powSecret, ip) });
+    db.insertMessage({ id, message, poster: posterHash(config.posterSecret, ip) });
     const saved = db.getById(id);
     sendJson(res, 201, { message: renderMessageJson(saved) });
   }
 
   function handleSearch(req, res, url, overrideQuery) {
+    if (!gate(req, res, url, 'search')) return;
+
     const rawQ = overrideQuery ?? url.searchParams.get('q');
-    const q = rawQ && rawQ.trim().length > 0 ? rawQ : null;
+    const q = rawQ ? rawQ.trim() : null;
     const poster = url.searchParams.get('poster');
+    const before = url.searchParams.get('before');
+
     if (poster !== null && !isPosterHash(poster)) {
       sendJson(res, 400, { error: 'bad_request', detail: 'poster must be a valid poster hash' });
       return;
     }
-    if (!q && !poster) {
-      sendJson(res, 400, { error: 'bad_request', detail: 'q or poster is required' });
+    if (before !== null && !isUuid(before)) {
+      sendJson(res, 400, { error: 'bad_request', detail: 'before must be a message id' });
+      return;
+    }
+    if (!q && !poster && !before) {
+      sendJson(res, 400, { error: 'bad_request', detail: 'q, poster, or before is required' });
       return;
     }
     if (q && q.length > config.maxQueryLength) {
       sendJson(res, 400, { error: 'bad_request', detail: `q exceeds ${config.maxQueryLength} characters` });
       return;
     }
-    let limit = config.searchLimitDefault;
-    const rawLimit = url.searchParams.get('limit');
-    if (rawLimit !== null) {
-      const parsed = Number(rawLimit);
-      if (!Number.isInteger(parsed) || parsed < 1 || parsed > config.searchLimitMax) {
-        sendJson(res, 400, { error: 'bad_request', detail: `limit must be an integer between 1 and ${config.searchLimitMax}` });
-        return;
-      }
-      limit = parsed;
-    }
-    if (!gate(req, res, url, 'search')) return;
 
     let results;
     if (q && isUuid(q)) {
@@ -216,38 +311,22 @@ function createServer(overrides = {}) {
       // so it's found the same way any other text is: through FTS.
       let direct = db.getById(q);
       if (direct && poster && direct.poster !== poster) direct = null;
-      const mentions = db.search(q, limit, poster);
+      const mentions = db.search(q, config.resultLimit, poster);
       results = direct ? [direct, ...mentions.filter((m) => m.id !== direct.id)] : mentions;
-      results = results.slice(0, limit);
+      results = results.slice(0, config.resultLimit);
     } else if (q) {
-      results = db.search(q, limit, poster);
+      results = db.search(q, config.resultLimit, poster);
+    } else if (poster) {
+      results = db.listByPoster(poster, config.resultLimit, before);
     } else {
-      results = db.listByPoster(poster, limit);
+      results = db.walk(config.resultLimit, before);
     }
-    sendJson(res, 200, { query: q, poster, count: results.length, results: results.map(renderMessageJson) });
-  }
-
-  function handleExport(req, res, url) {
-    const extra = resources.exportSizeBits(db.fileSizeBytes(), config.exportSizeReferenceBytes);
-    if (!gate(req, res, url, 'export', extra)) return;
-
-    let stat;
-    try {
-      stat = fs.statSync(config.dbFile);
-    } catch {
-      sendJson(res, 404, { error: 'not_found', detail: 'database file is not available' });
-      return;
-    }
-    res.writeHead(200, {
-      'Content-Type': 'application/vnd.sqlite3',
-      'Content-Length': stat.size,
-      'Content-Disposition': 'attachment; filename="swarm-forum.db"',
-      'Cache-Control': 'no-store',
-    });
-    fs.createReadStream(config.dbFile).pipe(res);
+    sendJson(res, 200, { query: q, poster, before, count: results.length, results: results.map(renderMessageJson) });
   }
 
   const server = http.createServer((req, res) => {
+    rateTracker.record();
+
     // GET only, deliberately: HEAD would need to carry a 402 challenge
     // body, but HEAD responses have no body by definition (fetch/undici
     // discard it client-side even if a server writes one), so it can
@@ -272,12 +351,18 @@ function createServer(overrides = {}) {
         handleHome(req, res);
         return;
       }
+      if (STATIC_FILE_CONTENTS[url.pathname]) {
+        const { body, type } = STATIC_FILE_CONTENTS[url.pathname];
+        res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'public, max-age=3600' });
+        res.end(body);
+        return;
+      }
       const permalink = PERMALINK_RE.exec(url.pathname);
       if (permalink) {
-        if (wantsJson(req)) {
-          handleSearch(req, res, url, permalink[1]);
+        if (wantsHtml(req)) {
+          handlePermalinkHtml(res, permalink[1]);
         } else {
-          handleHome(req, res);
+          handleSearch(req, res, url, permalink[1]);
         }
         return;
       }
@@ -287,10 +372,6 @@ function createServer(overrides = {}) {
       }
       if (url.pathname === '/search') {
         handleSearch(req, res, url);
-        return;
-      }
-      if (url.pathname === '/export') {
-        handleExport(req, res, url);
         return;
       }
       sendJson(res, 404, { error: 'not_found', detail: 'unknown endpoint; see GET /' });

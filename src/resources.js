@@ -1,89 +1,112 @@
 'use strict';
 
-const os = require('node:os');
 const fs = require('node:fs');
 
 // Base difficulty (required leading zero bits of sha256) per endpoint,
-// under idle conditions. These scale up automatically as resources tighten.
+// under idle conditions, and the highest total difficulty each endpoint
+// can ever reach regardless of how much pressure stacks. Both are
+// calibrated against a deliberately measured, conservative client hash
+// rate (~50,000 sha256/s for the pure-JS worker on a slow device — this
+// project's own implementation measured ~120,000/s in Node on ordinary
+// hardware) so "typical" and "worst case" mean actual seconds, not an
+// accident of how the ramp happens to compound:
+//   post:   base 17 bits ≈ 2.6-6s typical; capped at 21 bits ≈ 42-17s worst case
+//   search: base 14 bits ≈ 0.3-0.1s typical; capped at 18 bits ≈ 5-2s worst case
 const BASE_DIFFICULTY = {
   search: 14,
-  post: 18,
-  export: 22,
+  post: 17,
 };
 
-function loadRatio() {
-  return os.loadavg()[0] / os.cpus().length;
-}
+const MAX_DIFFICULTY = {
+  search: 18,
+  post: 21,
+};
 
 function dbUsageRatio(dbSizeBytes, maxDbSizeBytes) {
   if (!maxDbSizeBytes) return 0;
   return Math.min(dbSizeBytes / maxDbSizeBytes, 2);
 }
 
-function diskPressureRatio(dir, minFreeBytes) {
-  if (!minFreeBytes) return 0;
+function freeDiskBytes(dir) {
   try {
     const stats = fs.statfsSync(dir);
-    const freeBytes = stats.bavail * stats.bsize;
-    return Math.min(Math.max(1 - freeBytes / minFreeBytes, 0), 2);
+    return stats.bavail * stats.bsize;
   } catch {
-    return 0;
+    return Infinity; // can't measure free space — don't refuse posts over an unknown quantity
   }
 }
 
+function diskPressureRatio(freeBytes, minFreeBytes) {
+  if (!minFreeBytes) return 0;
+  return Math.min(Math.max(1 - freeBytes / minFreeBytes, 0), 2);
+}
+
 /**
- * Maps a 0..2 "pressure" ratio to extra proof-of-work bits. Below
- * `threshold` no extra work is demanded; beyond it the penalty ramps up
- * with `power`, so difficulty rises gently at first and steeply near
- * the configured resource ceiling.
+ * Maps a 0..2 "pressure" ratio to extra proof-of-work bits, clamped to
+ * `maxBits` regardless of how the intermediate math works out — `span`
+ * raised to `power` can otherwise overshoot the stated cap (e.g. 1.5**1.5
+ * ≈ 1.84x, not 1x) and silently drive difficulty far past what was
+ * intended. Below `threshold` no extra work is demanded; beyond it the
+ * penalty ramps up with `power`, so difficulty rises gently at first and
+ * steeply near the configured resource ceiling.
  */
 function extraBits(ratio, threshold, power, maxBits) {
   if (ratio <= threshold) return 0;
   const span = Math.min((ratio - threshold) / (1 - threshold), 1.5);
-  return Math.round(span ** power * maxBits);
+  return Math.min(Math.round(span ** power * maxBits), maxBits);
 }
 
-function computeDifficulty(endpoint, state, baseDifficulty = BASE_DIFFICULTY) {
+/**
+ * Total difficulty is also clamped per endpoint (`maxDifficulty`), on
+ * top of each component already being clamped — belt and suspenders:
+ * the per-component clamp bounds any one pressure source, the total
+ * clamp bounds what happens when several stack at once, so worst-case
+ * solve time is a number that was actually chosen, not whatever the sum
+ * of independent ramps happens to produce.
+ */
+function computeDifficulty(endpoint, state, baseDifficulty = BASE_DIFFICULTY, maxDifficulty = MAX_DIFFICULTY) {
   const base = baseDifficulty[endpoint];
   if (base === undefined) throw new Error(`unknown endpoint: ${endpoint}`);
   const load = extraBits(state.loadRatio, 0.6, 1.5, 8);
   const db = extraBits(state.dbUsageRatio, 0.5, 2, 12);
   const disk = extraBits(state.diskPressureRatio, 0.5, 2, 12);
-  return base + load + db + disk;
+  const total = base + load + db + disk;
+  const cap = maxDifficulty[endpoint];
+  return cap === undefined ? total : Math.min(total, cap);
 }
 
+/** Refuses posting on raw byte comparisons, not on the normalized ratios
+ * above: diskPressureRatio reaches its own "1" only once free space is
+ * exactly zero, by which point SQLite is already failing writes. Compare
+ * the real numbers so the ceiling fires while there's still headroom
+ * equal to the configured floor. */
 function isOverCapacity(state) {
-  return state.dbUsageRatio >= 1 || state.diskPressureRatio >= 1;
+  const dbOverCap = state.maxDbSizeBytes > 0 && state.dbSizeBytes >= state.maxDbSizeBytes;
+  const diskOverCap = state.minFreeBytes > 0 && state.freeBytes < state.minFreeBytes;
+  return dbOverCap || diskOverCap;
 }
 
-/**
- * Extra bits for /export specifically: downloading the whole database is
- * inherently heavier the bigger it is, independent of load or the
- * capacity ceiling, so it gets its own logarithmic ramp on top of the
- * shared difficulty above `referenceBytes`.
- */
-function exportSizeBits(dbSizeBytes, referenceBytes, maxBits = 16) {
-  if (!referenceBytes || dbSizeBytes <= referenceBytes) return 0;
-  const bits = Math.log2(dbSizeBytes / referenceBytes);
-  return Math.min(Math.max(Math.round(bits), 0), maxBits);
-}
-
-function currentState({ dbSizeBytes, maxDbSizeBytes, dataDir, minFreeBytes }) {
+function currentState({ dbSizeBytes, maxDbSizeBytes, dataDir, minFreeBytes, loadRatio }) {
+  const freeBytes = freeDiskBytes(dataDir);
   return {
-    loadRatio: loadRatio(),
+    loadRatio,
+    dbSizeBytes,
+    maxDbSizeBytes,
+    freeBytes,
+    minFreeBytes,
     dbUsageRatio: dbUsageRatio(dbSizeBytes, maxDbSizeBytes),
-    diskPressureRatio: diskPressureRatio(dataDir, minFreeBytes),
+    diskPressureRatio: diskPressureRatio(freeBytes, minFreeBytes),
   };
 }
 
 module.exports = {
   BASE_DIFFICULTY,
-  loadRatio,
+  MAX_DIFFICULTY,
   dbUsageRatio,
+  freeDiskBytes,
   diskPressureRatio,
   extraBits,
   computeDifficulty,
   isOverCapacity,
   currentState,
-  exportSizeBits,
 };

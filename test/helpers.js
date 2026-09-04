@@ -50,13 +50,15 @@ async function startTestServer(overrides = {}) {
     dbFile: path.join(dataDir, 'db.sqlite'),
     port: 0,
     powSecret: 'test-secret',
+    posterSecret: 'test-poster-secret',
     cacheIntervalMs: 60_000,
-    // Tiny difficulty: production values (14-22+ bits) are exercised in
-    // pow.test.js at the unit level. Solving them here would run the
-    // (synchronous, CPU-bound) solver in the same process and event loop
-    // as the server itself, and a multi-second solve can starve the
-    // server enough to trip its own keep-alive socket handling.
-    baseDifficulty: { search: 4, post: 6, export: 8 },
+    // Tiny difficulty: production values (14-21+ bits) are exercised in
+    // pow.test.js and resources.test.js at the unit level. Solving them
+    // here would run the (synchronous, CPU-bound) solver in the same
+    // process and event loop as the server itself, and a multi-second
+    // solve can starve the server enough to trip its own keep-alive
+    // socket handling.
+    baseDifficulty: { search: 4, post: 6 },
     ...overrides,
   });
   await new Promise((resolve, reject) => {

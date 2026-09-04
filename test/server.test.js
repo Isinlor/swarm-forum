@@ -6,29 +6,44 @@ const net = require('node:net');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { loadConfig, start } = require('../src/server');
+const { loadConfig, start, createServer } = require('../src/server');
 const { startTestServer, powFetch, solvePow } = require('./helpers');
 
 test('loadConfig applies overrides, falls back on invalid numbers, and reads env', () => {
-  const cfg = loadConfig({ port: 1234, maxMessageLength: 'not-a-number', env: {} });
+  const cfg = loadConfig({ port: 1234, maxMessageBytes: 'not-a-number', env: {} });
   assert.equal(cfg.port, 1234);
-  assert.equal(cfg.maxMessageLength, 1000); // fallback default
+  assert.equal(cfg.maxMessageBytes, 2048); // fallback default
 
-  const fromEnv = loadConfig({ env: { PORT: '9999', MAX_MESSAGE_LENGTH: '500' } });
+  const fromEnv = loadConfig({ env: { PORT: '9999', MAX_MESSAGE_BYTES: '500' } });
   assert.equal(fromEnv.port, 9999);
-  assert.equal(fromEnv.maxMessageLength, 500);
+  assert.equal(fromEnv.maxMessageBytes, 500);
 
   const defaultDataDir = loadConfig({ env: {} });
   assert.equal(defaultDataDir.dataDir, path.join(process.cwd(), 'data'));
+  assert.equal(defaultDataDir.posterSecret, null);
+  assert.equal(defaultDataDir.trustProxyHops, 0);
+  assert.equal(defaultDataDir.resultLimit, 100);
 
   const defaultBaseDifficulty = loadConfig({ env: {} });
-  assert.equal(defaultBaseDifficulty.baseDifficulty.post, 18);
+  assert.equal(defaultBaseDifficulty.baseDifficulty.post, 17);
+  assert.equal(defaultBaseDifficulty.maxDifficulty.post, 21);
 
-  const envBaseDifficulty = loadConfig({ env: { BASE_DIFFICULTY_POST: '30' } });
-  assert.equal(envBaseDifficulty.baseDifficulty.post, 30);
+  const envOverrides = loadConfig({ env: {
+    BASE_DIFFICULTY_POST: '30',
+    MAX_DIFFICULTY_POST: '40',
+    TRUST_PROXY_HOPS: '2',
+    POSTER_SECRET: 'from-env',
+    RESULT_LIMIT: '50',
+  } });
+  assert.equal(envOverrides.baseDifficulty.post, 30);
+  assert.equal(envOverrides.maxDifficulty.post, 40);
+  assert.equal(envOverrides.trustProxyHops, 2);
+  assert.equal(envOverrides.posterSecret, 'from-env');
+  assert.equal(envOverrides.resultLimit, 50);
 
-  const overrideBaseDifficulty = loadConfig({ baseDifficulty: { search: 1, post: 2, export: 3 } });
-  assert.deepEqual(overrideBaseDifficulty.baseDifficulty, { search: 1, post: 2, export: 3 });
+  const overrideBaseDifficulty = loadConfig({ baseDifficulty: { search: 1, post: 2 }, maxDifficulty: { search: 10, post: 20 } });
+  assert.deepEqual(overrideBaseDifficulty.baseDifficulty, { search: 1, post: 2 });
+  assert.deepEqual(overrideBaseDifficulty.maxDifficulty, { search: 10, post: 20 });
 });
 
 test('start() boots a listening server from defaults, reachable over HTTP', async () => {
@@ -39,7 +54,8 @@ test('start() boots a listening server from defaults, reachable over HTTP', asyn
     dataDir,
     dbFile: path.join(dataDir, 'db.sqlite'),
     powSecret: 'start-test',
-    baseDifficulty: { search: 1, post: 1, export: 1 },
+    posterSecret: 'start-test-poster',
+    baseDifficulty: { search: 1, post: 1 },
   });
   try {
     await new Promise((resolve) => server.once('listening', resolve));
@@ -52,21 +68,78 @@ test('start() boots a listening server from defaults, reachable over HTTP', asyn
   }
 });
 
-test('GET / serves HTML by default and JSON docs+latest on request', async () => {
+test('a poster secret is generated and persisted across restarts when not provided', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-poster-secret-'));
+  try {
+    const s1 = createServer({
+      dataDir, dbFile: path.join(dataDir, 'db.sqlite'), port: 0, powSecret: 'x',
+      baseDifficulty: { search: 1, post: 1 }, maxDifficulty: { search: 10, post: 10 },
+    });
+    await new Promise((resolve) => s1.listen(0, '127.0.0.1', resolve));
+    const base1 = `http://127.0.0.1:${s1.address().port}`;
+    const p1 = await powFetch(base1, '/post?' + new URLSearchParams({ message: 'persist test' }));
+    const poster1 = (await p1.json()).message.poster;
+    await new Promise((resolve) => s1.close(resolve));
+
+    const secretFile = path.join(dataDir, '.poster-secret');
+    assert.ok(fs.existsSync(secretFile));
+    assert.equal(fs.statSync(secretFile).mode & 0o777, 0o600);
+
+    const s2 = createServer({
+      dataDir, dbFile: path.join(dataDir, 'db.sqlite'), port: 0, powSecret: 'x',
+      baseDifficulty: { search: 1, post: 1 }, maxDifficulty: { search: 10, post: 10 },
+    });
+    await new Promise((resolve) => s2.listen(0, '127.0.0.1', resolve));
+    const base2 = `http://127.0.0.1:${s2.address().port}`;
+    const p2 = await powFetch(base2, '/post?' + new URLSearchParams({ message: 'persist test 2' }));
+    const poster2 = (await p2.json()).message.poster;
+    await new Promise((resolve) => s2.close(resolve));
+
+    assert.equal(poster1, poster2); // same IP, same persisted secret -> same hash
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('GET / defaults to JSON (agents), and serves HTML only when explicitly requested', async () => {
   const ctx = await startTestServer();
   try {
-    const html = await fetch(ctx.base + '/');
-    assert.equal(html.status, 200);
-    assert.match(html.headers.get('content-type'), /text\/html/);
-    const body = await html.text();
-    assert.match(body, /swarm-forum/);
-
-    const json = await fetch(ctx.base + '/', { headers: { Accept: 'application/json' } });
-    assert.equal(json.status, 200);
-    const data = await json.json();
+    const jsonByDefault = await fetch(ctx.base + '/');
+    assert.equal(jsonByDefault.status, 200);
+    assert.match(jsonByDefault.headers.get('content-type'), /application\/json/);
+    assert.match(jsonByDefault.headers.get('cache-control'), /public, max-age=/);
+    const data = await jsonByDefault.json();
     assert.equal(data.name, 'swarm-forum');
     assert.deepEqual(data.latest_messages, []);
     assert.equal(typeof data.proof_of_work.base_difficulty.post, 'number');
+    assert.equal(typeof data.proof_of_work.max_difficulty.post, 'number');
+
+    const html = await fetch(ctx.base + '/', { headers: { Accept: 'text/html' } });
+    assert.equal(html.status, 200);
+    assert.match(html.headers.get('content-type'), /text\/html/);
+    assert.match(html.headers.get('content-security-policy'), /script-src 'self'/);
+    const body = await html.text();
+    assert.match(body, /swarm-forum/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('/post and /search responses are never cached; static assets are', async () => {
+  const ctx = await startTestServer();
+  try {
+    const post402 = await fetch(ctx.base + '/post?message=hi');
+    assert.equal(post402.headers.get('cache-control'), 'no-store');
+
+    const search400 = await fetch(ctx.base + '/search');
+    assert.equal(search400.headers.get('cache-control'), 'no-store');
+
+    for (const file of ['/client.js', '/pow-worker.js', '/sha256.js']) {
+      const res = await fetch(ctx.base + file);
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get('content-type'), /javascript/);
+      assert.match(res.headers.get('cache-control'), /public/);
+    }
   } finally {
     await ctx.close();
   }
@@ -88,11 +161,13 @@ test('non-GET methods are rejected with 405 and an Allow header', async () => {
   }
 });
 
-test('unknown paths return 404', async () => {
+test('unknown paths return 404, including the removed /export endpoint', async () => {
   const ctx = await startTestServer();
   try {
     const res = await fetch(ctx.base + '/nope');
     assert.equal(res.status, 404);
+    const exportRes = await fetch(ctx.base + '/export');
+    assert.equal(exportRes.status, 404);
   } finally {
     await ctx.close();
   }
@@ -111,7 +186,7 @@ test('the per-slot difficulty cache evicts its oldest entry once it grows past i
   }
 });
 
-test('a request sent without an Accept or Host header still resolves via the URL fallback', async () => {
+test('a request sent without an Accept or Host header still resolves via the URL fallback, defaulting to JSON', async () => {
   const ctx = await startTestServer();
   try {
     const port = Number(new URL(ctx.base).port);
@@ -125,6 +200,7 @@ test('a request sent without an Accept or Host header still resolves via the URL
       sock.on('error', reject);
     });
     assert.match(response, /^HTTP\/1\.1 200/);
+    assert.match(response, /content-type: application\/json/i);
   } finally {
     await ctx.close();
   }
@@ -149,7 +225,7 @@ test('a malformed request target yields 400 instead of crashing the server', asy
   }
 });
 
-test('POST /post without proof-of-work is challenged with 402', async () => {
+test('POST /post without proof-of-work is challenged with 402, before any validation runs', async () => {
   const ctx = await startTestServer();
   try {
     const res = await fetch(ctx.base + '/post?message=hello');
@@ -158,6 +234,11 @@ test('POST /post without proof-of-work is challenged with 402', async () => {
     assert.equal(body.error, 'proof_of_work_required');
     assert.equal(typeof body.challenge, 'string');
     assert.equal(typeof body.difficulty, 'number');
+
+    // Even a request with no `message` at all is gated first: nothing
+    // about the request's validity is inspected before payment.
+    const missing = await fetch(ctx.base + '/post');
+    assert.equal(missing.status, 402);
   } finally {
     await ctx.close();
   }
@@ -173,34 +254,69 @@ test('an invalid pow nonce is rejected and a fresh challenge is reissued', async
   }
 });
 
-test('posting requires message and enforces the length limit', async () => {
+test('posting requires message and enforces the byte limit (checked after proof-of-work)', async () => {
   const ctx = await startTestServer();
   try {
-    const missing = await fetch(ctx.base + '/post');
+    const missing = await powFetch(ctx.base, '/post');
     assert.equal(missing.status, 400);
 
-    const empty = await fetch(ctx.base + '/post?message=');
+    const empty = await powFetch(ctx.base, '/post?message=');
     assert.equal(empty.status, 400);
 
-    const tooLong = await fetch(ctx.base + '/post?' + new URLSearchParams({ message: 'x'.repeat(1001) }));
+    const tooLong = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'x'.repeat(2049) }));
     assert.equal(tooLong.status, 400);
+    assert.match((await tooLong.json()).detail, /2048 bytes/);
   } finally {
     await ctx.close();
   }
 });
 
-test('reposting the exact same text within the proof-of-work window is rejected as a duplicate', async () => {
+test('the message limit is counted in UTF-8 bytes, not characters', async () => {
+  const ctx = await startTestServer();
+  try {
+    // Each of these emoji is 1 JS "character" pair worth of surrogate but
+    // 4 UTF-8 bytes; 600 of them is 2400 bytes, over the 2048 default.
+    const message = '🚀'.repeat(600);
+    assert.ok(Buffer.byteLength(message, 'utf8') > 2048);
+    const res = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message }));
+    assert.equal(res.status, 400);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('an oversized raw query string is rejected by the belt check even if `message` alone looks fine', async () => {
+  const ctx = await startTestServer();
+  try {
+    // .get('message') only ever sees the first value, but the full,
+    // un-decoded query string (what actually has to be parsed) can still
+    // be made huge via other/duplicate params.
+    const params = new URLSearchParams();
+    params.set('message', 'short and fine');
+    params.append('garbage', 'x'.repeat(10000));
+    const res = await powFetch(ctx.base, '/post?' + params.toString());
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).detail, /too large/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('reposting the exact same text within the proof-of-work window is rejected as a duplicate, without leaking that for free', async () => {
   const ctx = await startTestServer();
   try {
     const first = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'repeat me' }));
     assert.equal(first.status, 201);
 
-    const second = await fetch(ctx.base + '/post?' + new URLSearchParams({ message: 'repeat me' }));
-    assert.equal(second.status, 409);
-    const body = await second.json();
-    assert.equal(body.error, 'duplicate_message');
+    // Unsolved: the duplicate check runs after gate(), so a repost with
+    // no proof gets the ordinary 402 — not a free "yes, that exists".
+    const unsolved = await fetch(ctx.base + '/post?' + new URLSearchParams({ message: 'repeat me' }));
+    assert.equal(unsolved.status, 402);
 
-    // different text is unaffected
+    const second = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'repeat me' }));
+    assert.equal(second.status, 409);
+    assert.equal((await second.json()).error, 'duplicate_message');
+
     const different = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'not a repeat' }));
     assert.equal(different.status, 201);
   } finally {
@@ -217,8 +333,6 @@ test('a reply-by-convention (parent id embedded in text) surfaces via search, or
     assert.equal(firstBody.message.message, 'hello swarm');
     assert.equal('reply_to' in firstBody.message, false);
 
-    // there is no reply_to param: a reply is just text that mentions the
-    // parent id, in any format an agent chooses
     const reply = await powFetch(ctx.base, '/post?' + new URLSearchParams({
       message: `re: /m/${firstBody.message.id} thanks!`,
     }));
@@ -231,27 +345,43 @@ test('a reply-by-convention (parent id embedded in text) surfaces via search, or
 
     const idSearch = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: firstBody.message.id }));
     const idResults = await idSearch.json();
-    assert.equal(idResults.count, 3); // the original + 2 messages referencing it
-    assert.equal(idResults.results[0].id, firstBody.message.id); // original first
+    assert.equal(idResults.count, 3);
+    assert.equal(idResults.results[0].id, firstBody.message.id);
 
-    // every message here came from the same test client, so they all
-    // carry the same pseudonymous poster hash — and never the raw ip
     const posters = new Set(idResults.results.map((m) => m.poster));
     assert.equal(posters.size, 1);
-    assert.match([...posters][0], /^[0-9a-f]{12}$/);
+    assert.match([...posters][0], /^[0-9a-f]{16}$/);
     for (const m of idResults.results) assert.equal('ip' in m, false);
   } finally {
     await ctx.close();
   }
 });
 
-test('poster filters and lists work as their own query parameter', async () => {
+test('a padded query (whitespace around a uuid) still takes the direct id-lookup path', async () => {
+  const ctx = await startTestServer();
+  try {
+    const posted = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'trim me' }));
+    const { message } = await posted.json();
+
+    const padded = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: `  ${message.id}  ` }));
+    const body = await padded.json();
+    assert.equal(body.count, 1);
+    assert.equal(body.results[0].id, message.id);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('poster filters and lists work as their own query parameter, gated before validation', async () => {
   const ctx = await startTestServer();
   try {
     const posted = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'poster query test' }));
     const { message } = await posted.json();
 
-    const invalidPoster = await fetch(ctx.base + '/search?' + new URLSearchParams({ poster: 'not-a-hash' }));
+    // An invalid poster is still gated first, not surfaced for free.
+    const invalidPosterNoPow = await fetch(ctx.base + '/search?' + new URLSearchParams({ poster: 'not-a-hash' }));
+    assert.equal(invalidPosterNoPow.status, 402);
+    const invalidPoster = await powFetch(ctx.base, '/search?' + new URLSearchParams({ poster: 'not-a-hash' }));
     assert.equal(invalidPoster.status, 400);
 
     const listByPoster = await powFetch(ctx.base, '/search?' + new URLSearchParams({ poster: message.poster }));
@@ -266,12 +396,10 @@ test('poster filters and lists work as their own query parameter', async () => {
     assert.equal(combinedBody.count, 1);
     assert.equal(combinedBody.results[0].id, message.id);
 
-    // a poster that never posted that text yields no combined match
-    const wrongPoster = 'ffffffffffff';
+    const wrongPoster = 'ffffffffffffffff';
     const combinedMiss = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: 'poster query test', poster: wrongPoster }));
     assert.equal((await combinedMiss.json()).count, 0);
 
-    // an id-shaped q whose message doesn't belong to the given poster is excluded
     const idMiss = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: message.id, poster: wrongPoster }));
     assert.equal((await idMiss.json()).count, 0);
   } finally {
@@ -291,27 +419,21 @@ test('searching by a well-formed but unknown id returns an empty result set', as
   }
 });
 
-test('search validates q and limit, and finds text via full-text search', async () => {
+test('search requires q, poster, or before; a stray `limit` param has no effect (it is not a thing anymore)', async () => {
   const ctx = await startTestServer();
   try {
-    const missingQ = await fetch(ctx.base + '/search');
-    assert.equal(missingQ.status, 400);
+    const missingAll = await powFetch(ctx.base, '/search');
+    assert.equal(missingAll.status, 400);
+    assert.match((await missingAll.json()).detail, /q, poster, or before/);
 
-    const blankQ = await fetch(ctx.base + '/search?q=%20%20');
+    const blankQ = await powFetch(ctx.base, '/search?q=%20%20');
     assert.equal(blankQ.status, 400);
 
-    const tooLongQ = await fetch(ctx.base + '/search?' + new URLSearchParams({ q: 'x'.repeat(201) }));
+    const tooLongQ = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: 'x'.repeat(201) }));
     assert.equal(tooLongQ.status, 400);
 
-    const badLimit = await fetch(ctx.base + '/search?' + new URLSearchParams({ q: 'hi', limit: '0' }));
-    assert.equal(badLimit.status, 400);
-    const badLimit2 = await fetch(ctx.base + '/search?' + new URLSearchParams({ q: 'hi', limit: '101' }));
-    assert.equal(badLimit2.status, 400);
-    const badLimit3 = await fetch(ctx.base + '/search?' + new URLSearchParams({ q: 'hi', limit: 'abc' }));
-    assert.equal(badLimit3.status, 400);
-
     await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'searchable unique term xyzzy' }));
-    const found = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: 'xyzzy', limit: '5' }));
+    const found = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: 'xyzzy', limit: '999999' }));
     const foundBody = await found.json();
     assert.equal(foundBody.count, 1);
     assert.match(foundBody.results[0].message, /xyzzy/);
@@ -320,49 +442,58 @@ test('search validates q and limit, and finds text via full-text search', async 
   }
 });
 
-test('/export is proof-of-work gated and streams the sqlite file', async () => {
+test('search rejects a malformed `before` cursor, and walks the board newest-first when given a valid one', async () => {
   const ctx = await startTestServer();
   try {
-    const gated = await fetch(ctx.base + '/export');
-    assert.equal(gated.status, 402);
+    const badBefore = await powFetch(ctx.base, '/search?before=not-a-uuid');
+    assert.equal(badBefore.status, 400);
 
-    const res = await powFetch(ctx.base, '/export');
-    assert.equal(res.status, 200);
-    assert.equal(res.headers.get('content-type'), 'application/vnd.sqlite3');
-    assert.match(res.headers.get('content-disposition'), /attachment/);
-    const buf = Buffer.from(await res.arrayBuffer());
-    assert.equal(buf.toString('utf8', 0, 15), 'SQLite format 3');
+    const first = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'walk one' }));
+    const m1 = (await first.json()).message;
+    const second = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'walk two' }));
+    const m2 = (await second.json()).message;
+
+    const page1 = await powFetch(ctx.base, '/search?' + new URLSearchParams({ before: m2.id }));
+    const page1Body = await page1.json();
+    assert.equal(page1Body.before, m2.id);
+    assert.deepEqual(page1Body.results.map((m) => m.id), [m1.id]);
   } finally {
     await ctx.close();
   }
 });
 
-test('/export returns 404 if the database file has vanished from disk', async () => {
-  const ctx = await startTestServer();
-  try {
-    fs.rmSync(ctx.server.swarmForum.config.dbFile, { force: true });
-    const res = await powFetch(ctx.base, '/export');
-    assert.equal(res.status, 404);
-  } finally {
-    await ctx.close();
-  }
-});
-
-test('a permalink resolves via JSON like /search?q=<id>, and via HTML serves the app shell', async () => {
+test('a permalink serves the app shell with that message rendered when HTML is explicitly requested, JSON (via /search) otherwise', async () => {
   const ctx = await startTestServer();
   try {
     const posted = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'permalink target' }));
     const { message } = await posted.json();
 
-    const html = await fetch(`${ctx.base}/m/${message.id}`);
+    const jsonByDefault = await fetch(`${ctx.base}/m/${message.id}`);
+    assert.match(jsonByDefault.headers.get('content-type'), /application\/json/);
+
+    const html = await fetch(`${ctx.base}/m/${message.id}`, { headers: { Accept: 'text/html' } });
     assert.equal(html.status, 200);
     assert.match(html.headers.get('content-type'), /text\/html/);
+    const htmlBody = await html.text();
+    assert.match(htmlBody, new RegExp(`rel="canonical" href="/m/${message.id}"`));
+    assert.match(htmlBody, new RegExp(message.id));
 
     const json = await powFetch(ctx.base, `/m/${message.id}`, { headers: { Accept: 'application/json' } });
     assert.equal(json.status, 200);
     const data = await json.json();
     assert.equal(data.query, message.id);
     assert.equal(data.results[0].id, message.id);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('an HTML permalink request for a well-formed but missing id returns 404', async () => {
+  const ctx = await startTestServer();
+  try {
+    const res = await fetch(`${ctx.base}/m/01890a5d-ac96-774b-bcce-b302099a8057`, { headers: { Accept: 'text/html' } });
+    assert.equal(res.status, 404);
+    assert.equal((await res.json()).error, 'not_found');
   } finally {
     await ctx.close();
   }
@@ -378,7 +509,7 @@ test('a path merely resembling /m/<id> without a valid id falls through to 404',
   }
 });
 
-test('posting is refused once the board is over its configured capacity', async () => {
+test('posting is refused once the board is over its configured capacity, without needing proof-of-work', async () => {
   const ctx = await startTestServer({ maxDbSizeBytes: 1 }); // any real db exceeds 1 byte
   try {
     const res = await fetch(ctx.base + '/post?message=hi');
@@ -387,6 +518,45 @@ test('posting is refused once the board is over its configured capacity', async 
     assert.equal(body.error, 'insufficient_storage');
   } finally {
     await ctx.close();
+  }
+});
+
+test('posting is refused once free disk space drops below the configured floor', async () => {
+  // A MIN_FREE_BYTES far above real free disk space simulates "the disk
+  // is nearly full" without actually filling it — proving the ceiling
+  // fires on raw byte comparisons well before free space hits zero.
+  const ctx = await startTestServer({ minFreeBytes: Number.MAX_SAFE_INTEGER });
+  try {
+    const res = await fetch(ctx.base + '/post?message=hi');
+    assert.equal(res.status, 507);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('X-Forwarded-For changes the poster hash only when TRUST_PROXY_HOPS says to trust it', async () => {
+  const direct = await startTestServer();
+  const proxied = await startTestServer({ trustProxyHops: 1 });
+  try {
+    const directRes = await powFetch(direct.base, '/post?' + new URLSearchParams({ message: 'direct' }), {
+      headers: { 'X-Forwarded-For': '203.0.113.5' },
+    });
+    const directPoster = (await directRes.json()).message.poster;
+
+    const ignoredRes = await powFetch(direct.base, '/post?' + new URLSearchParams({ message: 'direct again' }), {
+      headers: { 'X-Forwarded-For': '203.0.113.99' },
+    });
+    const ignoredPoster = (await ignoredRes.json()).message.poster;
+    assert.equal(directPoster, ignoredPoster); // trustProxyHops=0: header ignored either way
+
+    const proxiedRes = await powFetch(proxied.base, '/post?' + new URLSearchParams({ message: 'via proxy' }), {
+      headers: { 'X-Forwarded-For': '203.0.113.5' },
+    });
+    const proxiedPoster = (await proxiedRes.json()).message.poster;
+    assert.notEqual(proxiedPoster, directPoster); // different (trusted) claimed origin -> different hash
+  } finally {
+    await direct.close();
+    await proxied.close();
   }
 });
 

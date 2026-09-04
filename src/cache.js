@@ -11,7 +11,7 @@ function createLatestCache(db, { intervalMs = 5000, limit = 100 } = {}) {
   let snapshot = { updatedAt: 0, messages: [] };
 
   function refresh() {
-    snapshot = { updatedAt: Date.now(), messages: db.latest(limit) };
+    snapshot = { updatedAt: Date.now(), messages: db.walk(limit) };
     return snapshot;
   }
 

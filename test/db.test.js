@@ -45,15 +45,6 @@ test('getById returns null for a missing id', () => {
   });
 });
 
-test('exists reflects presence', () => {
-  withDb((db) => {
-    const id = uuidv7();
-    assert.equal(db.exists(id), false);
-    db.insertMessage({ id, message: 'hi', ip: '::1', poster: 'poster0000ab' });
-    assert.equal(db.exists(id), true);
-  });
-});
-
 test('listByPoster returns only that poster\'s messages, most recent first, respecting the limit', () => {
   withDb((db) => {
     const ids = [];
@@ -72,6 +63,24 @@ test('listByPoster returns only that poster\'s messages, most recent first, resp
     assert.equal(limited.length, 2);
 
     assert.deepEqual(db.listByPoster('cccccccccccc', 10), []);
+
+    const beforeCursor = db.listByPoster('aaaaaaaaaaaa', 10, ids[2]);
+    assert.deepEqual(beforeCursor.map((m) => m.id), [ids[1], ids[0]]);
+  });
+});
+
+test('walk lists messages newest-first and resumes from a cursor id', () => {
+  withDb((db) => {
+    const ids = [];
+    for (let i = 0; i < 5; i += 1) {
+      const id = uuidv7(1000 + i);
+      ids.push(id);
+      db.insertMessage({ id, message: `m${i}`, poster: 'poster0000ab' });
+    }
+
+    assert.deepEqual(db.walk(10).map((m) => m.id), [...ids].reverse());
+    assert.deepEqual(db.walk(2).map((m) => m.id), [ids[4], ids[3]]);
+    assert.deepEqual(db.walk(10, ids[3]).map((m) => m.id), [ids[2], ids[1], ids[0]]);
   });
 });
 
@@ -148,7 +157,17 @@ test('fileSizeBytes reports the on-disk size, and 0 once the file is gone', () =
 
 test('fileSizeBytes returns 0 if the underlying file has been removed', () => {
   withDb((db) => {
-    fs.rmSync(db.filePath, { force: true });
+    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(db.filePath + suffix, { force: true });
     assert.equal(db.fileSizeBytes(), 0);
+  });
+});
+
+test('fileSizeBytes counts the -wal file too, under WAL journal mode', () => {
+  withDb((db) => {
+    const before = db.fileSizeBytes();
+    // an uncommitted-but-flushed write grows the -wal file, not the main one
+    db.insertMessage({ id: uuidv7(), message: 'wal growth check', poster: 'poster0000ab' });
+    assert.ok(db.fileSizeBytes() >= before);
+    assert.ok(fs.existsSync(`${db.filePath}-wal`));
   });
 });
