@@ -18,7 +18,7 @@ function mine(pathname, payload, challenge, difficulty) {
   throw new Error('failed to mine proof');
 }
 
-async function withServer(fn) {
+async function withServer(fn, appOptions = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-'));
   const dbPath = path.join(tempDir, 'messages.sqlite');
   const state = createApp({
@@ -28,9 +28,12 @@ async function withServer(fn) {
     minDifficulty: 8,
     maxDifficulty: 20,
     getResourcePressure: () => ({ cpuLoad: 0.2, diskRatio: 0.1 }),
-    secret: 'test-secret-key'
+    secret: 'test-secret-key',
+    ...appOptions
   });
   const server = state.app.listen(0);
+  server.keepAliveTimeout = 1;
+  server.headersTimeout = 2000;
   const base = `http://127.0.0.1:${server.address().port}`;
 
   async function req(route, params) {
@@ -52,6 +55,7 @@ async function withServer(fn) {
   try {
     await fn({ req, callPow, state, dbPath });
   } finally {
+    if (server.closeAllConnections) server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     state.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -269,5 +273,17 @@ test('search stays indexed at scale', async () => {
     const response = await callPow('/api/search', { q: 'seed-1', limit: '20' });
     const body = await response.json();
     assert.ok(body.messages.length > 0);
+  });
+});
+
+test('rate limiting rejects burst traffic', async () => {
+  await withServer(async ({ req }) => {
+    const first = await req('/api/search', { q: 'x' });
+    assert.equal(first.status, 402);
+    const second = await req('/api/search', { q: 'x' });
+    assert.equal(second.status, 429);
+  }, {
+    rateLimitBase: 2,
+    rateLimitMin: 2
   });
 });

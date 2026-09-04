@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
 const { DatabaseSync } = require('node:sqlite');
 const { uuidv7 } = require('./uuidv7');
 
@@ -94,6 +95,8 @@ function createApp(options = {}) {
     maxDifficulty: options.maxDifficulty ?? 28,
     maxDbBytes: options.maxDbBytes ?? 50 * 1024 * 1024,
     cacheIntervalMs: options.cacheIntervalMs ?? 5000,
+    rateLimitBase: options.rateLimitBase ?? 200,
+    rateLimitMin: options.rateLimitMin ?? 20,
     secret: options.secret || crypto.randomBytes(32).toString('hex')
   };
 
@@ -204,6 +207,21 @@ function createApp(options = {}) {
     };
   }
 
+  function makeLimiter(weight = 1) {
+    return rateLimit({
+      windowMs: 60 * 1000,
+      limit: () => {
+        const difficulty = computeDifficulty(config, config.dbPath, options.getResourcePressure);
+        const maxTokens = Math.max(config.rateLimitMin, config.rateLimitBase - (difficulty * 5));
+        return Math.max(1, Math.floor(maxTokens / weight));
+      },
+      keyGenerator: (req) => req.ip,
+      standardHeaders: true,
+      legacyHeaders: false,
+      handler: (req, res) => res.status(429).json({ error: 'rate_limited' })
+    });
+  }
+
   app.get('/', (req, res) => {
     const difficulty = computeDifficulty(config, config.dbPath, options.getResourcePressure);
     const challenge = createChallenge(config.secret, req.ip);
@@ -250,7 +268,7 @@ document.getElementById('searchForm').addEventListener('submit',async(e)=>{e.pre
     res.set('cache-control', 'public, max-age=30').type('application/json').send(latestCache);
   });
 
-  app.get('/api/post', requirePow((req) => payloadFromQuery(req, ['msg', 'reply']), 1), (req, res) => {
+  app.get('/api/post', makeLimiter(3), requirePow((req) => payloadFromQuery(req, ['msg', 'reply']), 1), (req, res) => {
     const message = String(req.query.msg || '');
     const trimmed = message.trim();
     if (!trimmed) return res.status(400).json({ error: 'msg_required' });
@@ -267,7 +285,7 @@ document.getElementById('searchForm').addEventListener('submit',async(e)=>{e.pre
     return res.json({ id, timestamp, url: `/?m=${id}` });
   });
 
-  app.get('/api/search', requirePow((req) => payloadFromQuery(req, ['q', 'limit'])), (req, res) => {
+  app.get('/api/search', makeLimiter(2), requirePow((req) => payloadFromQuery(req, ['q', 'limit'])), (req, res) => {
     const q = normalizedPrefix(req.query.q);
     if (!q) return res.status(400).json({ error: 'q_required' });
     const limitRaw = Number.parseInt(String(req.query.limit || '20'), 10);
@@ -277,11 +295,11 @@ document.getElementById('searchForm').addEventListener('submit',async(e)=>{e.pre
     return res.json({ messages, query: q, limit });
   });
 
-  app.get('/api/db', requirePow(() => 'download=1', 6), (req, res) => {
+  app.get('/api/db', makeLimiter(10), requirePow(() => 'download=1', 6), (req, res) => {
     res.download(config.dbPath, 'swarm-forum.sqlite');
   });
 
-  app.get('/api/message', requirePow((req) => payloadFromQuery(req, ['id'])), (req, res) => {
+  app.get('/api/message', makeLimiter(1), requirePow((req) => payloadFromQuery(req, ['id'])), (req, res) => {
     const id = String(req.query.id || '').toLowerCase();
     if (!UUID_RE.test(id)) return res.status(400).json({ error: 'id_invalid' });
     const message = singleStmt.get(id);

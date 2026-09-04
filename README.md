@@ -25,6 +25,7 @@ Message record: `id (uuidv7), message, timestamp(ms), ip, reply_to?`.
 ## Proof of Work
 
 Except `/` and `/cache/latest.json`, every endpoint requires PoW. Difficulty is adjusted from CPU load and database size limits and rises for heavy operations (DB download).
+API routes are also IP rate-limited with tighter budgets as resource pressure increases.
 
 Hash input:
 
