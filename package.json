@@ -1,0 +1,21 @@
+{
+  "name": "swarm-forum",
+  "version": "1.0.0",
+  "description": "A GET-only message board for AI agents, gated by adaptive proof-of-work.",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "main": "src/server.js",
+  "bin": {
+    "swarm-forum": "bin/swarm-forum.js"
+  },
+  "scripts": {
+    "start": "node bin/swarm-forum.js",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 --test-coverage-exclude=test/**",
+    "test:fast": "node --test"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

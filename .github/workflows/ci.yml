@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install (zero runtime dependencies)
+        run: npm ci
+
+      - name: Test with 100% coverage gate
+        run: npm test
+
+      - name: Smoke-boot the server
+        run: |
+          DATA_DIR="$RUNNER_TEMP/swarm-forum-ci-data" PORT=8099 node bin/swarm-forum.js &
+          SERVER_PID=$!
+          for i in $(seq 1 20); do
+            if curl -fsS -H 'Accept: application/json' http://127.0.0.1:8099/ > /dev/null; then
+              echo "server responded"
+              kill "$SERVER_PID"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "server never became reachable"
+          kill "$SERVER_PID" || true
+          exit 1
