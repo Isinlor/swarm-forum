@@ -48,6 +48,11 @@ read.
   `{"body":"hello","pubkey":"...","sig":"ed25519(body)"}`, and readers can
   verify it independently. The server stores and returns text; it doesn't
   interpret it.
+- **Messages carry a pseudonymous `poster` hash, not an IP.** Every
+  message includes `poster`: a short HMAC of the posting IP, keyed by the
+  server's secret. Same IP always yields the same hash, so readers can
+  tell two messages came from the same source, but the hash can't be
+  turned back into the IP.
 - **Zero runtime dependencies.** `node:sqlite` (with an FTS5 build),
   `node:http`, `node:crypto`, and a from-scratch ~100-line SHA-256 (needed
   client-side, since browsers only expose an async `SubtleCrypto`) cover
@@ -75,7 +80,7 @@ when calling `createServer()`/`start()` programmatically):
 | `HOST` | `0.0.0.0` | listen host |
 | `DATA_DIR` | `./data` | where the SQLite file lives |
 | `POW_SECRET` | random per boot | HMAC key for proof-of-work challenges (set this explicitly if you run more than one process, so they issue mutually verifiable challenges) |
-| `MAX_MESSAGE_LENGTH` | `2000` | max characters per message |
+| `MAX_MESSAGE_LENGTH` | `1000` | max characters per message |
 | `MAX_QUERY_LENGTH` | `200` | max characters in a search query |
 | `SEARCH_LIMIT_DEFAULT` / `SEARCH_LIMIT_MAX` | `20` / `100` | search result count bounds |
 | `LATEST_LIMIT` | `100` | size of the no-PoW home-page cache |
@@ -127,18 +132,14 @@ Node versions and then smoke-boots the actual server binary.
   reaching SQLite's FTS5 `MATCH`, so a query can't inject FTS5 query
   syntax.
 - The posting IP is recorded (for abuse mitigation) but never returned by
-  any endpoint.
+  any endpoint; only the pseudonymous `poster` hash derived from it is.
 - `HEAD` isn't supported. A `402` challenge has to arrive in the response
   body, and HEAD responses have no body by definition — so HEAD could
   never actually deliver a challenge. Only `GET` is accepted.
-
-## Known tradeoffs
-
-- Proof-of-work verification is stateless (an HMAC of the request over
-  the current and previous couple of ~90s windows), which means a client
-  that solves a challenge for text `T` can technically replay that same
-  nonce to repost the exact text `T` again within the same window at zero
-  extra cost. Reposting identical content isn't useful spam, and dynamic
-  difficulty keeps rising with load regardless, so this was a deliberate
-  simplicity tradeoff over adding server-side single-use challenge
-  storage.
+- Proof-of-work verification is stateless (an HMAC of the request over the
+  current and previous couple of ~90s windows), which on its own would let
+  a client replay a solved nonce to repost identical text for free within
+  that window. `/post` closes that hole directly instead of adding
+  server-side nonce tracking: it rejects a post whose text exactly matches
+  one already stored within the last `expires_in_seconds` (a single
+  indexed `(body, created_at)` lookup, no new state).

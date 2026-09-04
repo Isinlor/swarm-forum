@@ -29,7 +29,7 @@ test('toFtsQuery tokenizes, quotes, and ANDs terms; empty input yields null', ()
 test('insertMessage + getById round-trips a message, including nested data dirs', () => {
   withDb((db) => {
     const id = uuidv7();
-    db.insertMessage({ id, message: 'hello there', createdAt: Date.parse('2024-01-01T00:00:00Z'), ip: '127.0.0.1', replyTo: null });
+    db.insertMessage({ id, message: 'hello there', createdAt: Date.parse('2024-01-01T00:00:00Z'), ip: '127.0.0.1', poster: 'poster0000', replyTo: null });
     const found = db.getById(id);
     assert.equal(found.id, id);
     assert.equal(found.message, 'hello there');
@@ -48,7 +48,7 @@ test('exists reflects presence', () => {
   withDb((db) => {
     const id = uuidv7();
     assert.equal(db.exists(id), false);
-    db.insertMessage({ id, message: 'hi', createdAt: Date.now(), ip: '::1', replyTo: null });
+    db.insertMessage({ id, message: 'hi', createdAt: Date.now(), ip: '::1', poster: 'poster0000', replyTo: null });
     assert.equal(db.exists(id), true);
   });
 });
@@ -56,9 +56,9 @@ test('exists reflects presence', () => {
 test('reply_to is exposed as a host-free /m/<id> path', () => {
   withDb((db) => {
     const parent = uuidv7();
-    db.insertMessage({ id: parent, message: 'parent', createdAt: Date.now(), ip: '::1', replyTo: null });
+    db.insertMessage({ id: parent, message: 'parent', createdAt: Date.now(), ip: '::1', poster: 'poster0000', replyTo: null });
     const child = uuidv7();
-    db.insertMessage({ id: child, message: 'child', createdAt: Date.now() + 1, ip: '::1', replyTo: parent });
+    db.insertMessage({ id: child, message: 'child', createdAt: Date.now() + 1, ip: '::1', poster: 'poster0000', replyTo: parent });
     const found = db.getById(child);
     assert.equal(found.reply_to, `/m/${parent}`);
   });
@@ -67,12 +67,12 @@ test('reply_to is exposed as a host-free /m/<id> path', () => {
 test('getRepliesTo returns replies oldest-first, respecting the limit', () => {
   withDb((db) => {
     const parent = uuidv7();
-    db.insertMessage({ id: parent, message: 'parent', createdAt: 1000, ip: '::1', replyTo: null });
+    db.insertMessage({ id: parent, message: 'parent', createdAt: 1000, ip: '::1', poster: 'poster0000', replyTo: null });
     const ids = [];
     for (let i = 0; i < 3; i += 1) {
       const id = uuidv7();
       ids.push(id);
-      db.insertMessage({ id, message: `reply ${i}`, createdAt: 2000 + i, ip: '::1', replyTo: parent });
+      db.insertMessage({ id, message: `reply ${i}`, createdAt: 2000 + i, ip: '::1', poster: 'poster0000', replyTo: parent });
     }
     const replies = db.getRepliesTo(parent, 2);
     assert.equal(replies.length, 2);
@@ -87,7 +87,7 @@ test('latest orders newest-first and respects the limit', () => {
     for (let i = 0; i < 5; i += 1) {
       const id = uuidv7();
       ids.push(id);
-      db.insertMessage({ id, message: `m${i}`, createdAt: 1000 + i, ip: '::1', replyTo: null });
+      db.insertMessage({ id, message: `m${i}`, createdAt: 1000 + i, ip: '::1', poster: 'poster0000', replyTo: null });
     }
     const latest = db.latest(3);
     assert.equal(latest.length, 3);
@@ -98,8 +98,8 @@ test('latest orders newest-first and respects the limit', () => {
 test('count reflects the number of stored messages', () => {
   withDb((db) => {
     assert.equal(db.count(), 0);
-    db.insertMessage({ id: uuidv7(), message: 'x', createdAt: Date.now(), ip: '::1', replyTo: null });
-    db.insertMessage({ id: uuidv7(), message: 'y', createdAt: Date.now(), ip: '::1', replyTo: null });
+    db.insertMessage({ id: uuidv7(), message: 'x', createdAt: Date.now(), ip: '::1', poster: 'poster0000', replyTo: null });
+    db.insertMessage({ id: uuidv7(), message: 'y', createdAt: Date.now(), ip: '::1', poster: 'poster0000', replyTo: null });
     assert.equal(db.count(), 2);
   });
 });
@@ -107,9 +107,9 @@ test('count reflects the number of stored messages', () => {
 test('search finds messages containing all query tokens regardless of order', () => {
   withDb((db) => {
     const a = uuidv7();
-    db.insertMessage({ id: a, message: 'the quick brown fox', createdAt: 1000, ip: '::1', replyTo: null });
+    db.insertMessage({ id: a, message: 'the quick brown fox', createdAt: 1000, ip: '::1', poster: 'poster0000', replyTo: null });
     const b = uuidv7();
-    db.insertMessage({ id: b, message: 'lazy dog sleeps', createdAt: 1001, ip: '::1', replyTo: null });
+    db.insertMessage({ id: b, message: 'lazy dog sleeps', createdAt: 1001, ip: '::1', poster: 'poster0000', replyTo: null });
 
     const results = db.search('brown quick');
     assert.equal(results.length, 1);
@@ -121,7 +121,7 @@ test('search finds messages containing all query tokens regardless of order', ()
 
 test('search with a query that tokenizes to nothing returns no results', () => {
   withDb((db) => {
-    db.insertMessage({ id: uuidv7(), message: 'hello', createdAt: 1000, ip: '::1', replyTo: null });
+    db.insertMessage({ id: uuidv7(), message: 'hello', createdAt: 1000, ip: '::1', poster: 'poster0000', replyTo: null });
     assert.deepEqual(db.search('!!!'), []);
   });
 });

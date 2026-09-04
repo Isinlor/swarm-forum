@@ -12,7 +12,7 @@ const { startTestServer, powFetch, solvePow } = require('./helpers');
 test('loadConfig applies overrides, falls back on invalid numbers, and reads env', () => {
   const cfg = loadConfig({ port: 1234, maxMessageLength: 'not-a-number', env: {} });
   assert.equal(cfg.port, 1234);
-  assert.equal(cfg.maxMessageLength, 2000); // fallback default
+  assert.equal(cfg.maxMessageLength, 1000); // fallback default
 
   const fromEnv = loadConfig({ env: { PORT: '9999', MAX_MESSAGE_LENGTH: '500' } });
   assert.equal(fromEnv.port, 9999);
@@ -198,6 +198,25 @@ test('posting requires message, enforces the length limit, and validates reply_t
   }
 });
 
+test('reposting the exact same text within the proof-of-work window is rejected as a duplicate', async () => {
+  const ctx = await startTestServer();
+  try {
+    const first = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'repeat me' }));
+    assert.equal(first.status, 201);
+
+    const second = await fetch(ctx.base + '/post?' + new URLSearchParams({ message: 'repeat me' }));
+    assert.equal(second.status, 409);
+    const body = await second.json();
+    assert.equal(body.error, 'duplicate_message');
+
+    // different text is unaffected
+    const different = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'not a repeat' }));
+    assert.equal(different.status, 201);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('a message posted with proof-of-work is stored and retrievable by id and by reply_to', async () => {
   const ctx = await startTestServer();
   try {
@@ -231,6 +250,13 @@ test('a message posted with proof-of-work is stored and retrievable by id and by
     const idSearch = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: firstBody.message.id }));
     const idResults = await idSearch.json();
     assert.equal(idResults.count, 4); // the message itself + 3 replies
+
+    // every message here came from the same test client, so they all
+    // carry the same pseudonymous poster hash — and never the raw ip
+    const posters = new Set(idResults.results.map((m) => m.poster));
+    assert.equal(posters.size, 1);
+    assert.match([...posters][0], /^[0-9a-f]{12}$/);
+    for (const m of idResults.results) assert.equal('ip' in m, false);
   } finally {
     await ctx.close();
   }

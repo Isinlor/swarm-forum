@@ -10,6 +10,7 @@ const { createLatestCache } = require('./cache');
 const { uuidv7, isUuid } = require('./uuid');
 const pow = require('./pow');
 const resources = require('./resources');
+const { posterHash } = require('./poster');
 const { buildDocs, renderHome, renderMessageJson, escapeHtml } = require('./render');
 
 const REPLY_PATH_RE = /^\/m\/([0-9a-f-]{36})$/i;
@@ -18,6 +19,12 @@ const REPLY_PATH_RE = /^\/m\/([0-9a-f-]{36})$/i;
 // (any of which a client could reasonably paste in) — only the trailing
 // "/m/<id>" shape carries meaning, matching "no host needed" portability.
 const REPLY_TAIL_RE = /\/m\/([0-9a-f-]{36})$/i;
+// How long a solved proof-of-work nonce stays valid. A client that solves
+// a challenge for text T can replay that same nonce to repost T again
+// within this window at zero extra cost (verification is stateless, see
+// pow.js) — the duplicate-text check in handlePost is what actually
+// closes that hole, by rejecting a repost of identical text within it.
+const POW_VALIDITY_MS = pow.WINDOW_MS * pow.WINDOW_TOLERANCE;
 
 function loadConfig(overrides = {}) {
   const env = overrides.env || process.env;
@@ -34,7 +41,7 @@ function loadConfig(overrides = {}) {
     dataDir,
     dbFile: overrides.dbFile || path.join(dataDir, 'swarm-forum.db'),
     powSecret: overrides.powSecret || env.POW_SECRET || crypto.randomBytes(32).toString('hex'),
-    maxMessageLength: num('maxMessageLength', num('MAX_MESSAGE_LENGTH', 2000)),
+    maxMessageLength: num('maxMessageLength', num('MAX_MESSAGE_LENGTH', 1000)),
     maxQueryLength: num('maxQueryLength', num('MAX_QUERY_LENGTH', 200)),
     searchLimitDefault: num('searchLimitDefault', num('SEARCH_LIMIT_DEFAULT', 20)),
     searchLimitMax: num('searchLimitMax', num('SEARCH_LIMIT_MAX', 100)),
@@ -113,7 +120,7 @@ function createServer(overrides = {}) {
     maxQueryLength: config.maxQueryLength,
     searchLimitDefault: config.searchLimitDefault,
     searchLimitMax: config.searchLimitMax,
-    powWindowSeconds: Math.round((pow.WINDOW_MS * pow.WINDOW_TOLERANCE) / 1000),
+    powWindowSeconds: Math.round(POW_VALIDITY_MS / 1000),
     baseDifficulty: config.baseDifficulty,
   });
 
@@ -177,6 +184,13 @@ function createServer(overrides = {}) {
       sendJson(res, 400, { error: 'bad_request', detail: 'reply_to must be an existing message id or /m/<id> path' });
       return;
     }
+    if (db.recentDuplicate(message, Date.now() - POW_VALIDITY_MS)) {
+      sendJson(res, 409, {
+        error: 'duplicate_message',
+        detail: 'this exact text was already posted recently; edit it or wait for the proof-of-work window to pass',
+      });
+      return;
+    }
     if (!gate(req, res, url, 'post')) return;
 
     const ip = req.socket.remoteAddress;
@@ -185,6 +199,7 @@ function createServer(overrides = {}) {
       message,
       createdAt: Date.now(),
       ip,
+      poster: posterHash(config.powSecret, ip),
       replyTo: replyTo.value,
     });
     const saved = db.getById(record.id);

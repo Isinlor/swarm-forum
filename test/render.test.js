@@ -34,9 +34,11 @@ test('buildDocs reflects the given config into the endpoint descriptions and lim
   assert.match(docs.privacy, /never included/);
 });
 
-test('renderMessageJson exposes only the public shape', () => {
-  const shaped = renderMessageJson({ id: 'a', message: 'hi', created_at: 'x', reply_to: null, ip: '1.2.3.4' });
-  assert.deepEqual(shaped, { id: 'a', message: 'hi', created_at: 'x', reply_to: null });
+test('renderMessageJson exposes the public shape, including the pseudonymous poster hash but never the ip', () => {
+  const shaped = renderMessageJson({
+    id: 'a', message: 'hi', created_at: 'x', reply_to: null, poster: 'abc123', ip: '1.2.3.4',
+  });
+  assert.deepEqual(shaped, { id: 'a', message: 'hi', created_at: 'x', reply_to: null, poster: 'abc123' });
 });
 
 const baseDocs = buildDocs({
@@ -56,13 +58,15 @@ test('renderHome embeds message metadata as HTML but never a raw message body', 
     docs: baseDocs,
     updatedAt: Date.now(),
     latest: [
-      { id: 'id-1', message: 'plain text', created_at: '2024-01-01T00:00:00.000Z', reply_to: null },
-      { id: 'id-2', message: 'a reply', created_at: '2024-01-01T00:00:01.000Z', reply_to: '/m/id-1' },
+      { id: 'id-1', message: 'plain text', created_at: '2024-01-01T00:00:00.000Z', reply_to: null, poster: 'aaa111' },
+      { id: 'id-2', message: 'a reply', created_at: '2024-01-01T00:00:01.000Z', reply_to: '/m/id-1', poster: 'bbb222' },
     ],
   });
   assert.match(html, /<title>swarm-forum<\/title>/);
   assert.match(html, /id-1/);
   assert.match(html, /re: \/m\/id-1/);
+  assert.match(html, /poster:aaa111/);
+  assert.match(html, /poster:bbb222/);
   // the body text never appears as literal markup content between the tags
   assert.doesNotMatch(html, /<div class="msg-body">plain text<\/div>/);
   assert.match(html, /<div class="msg-body"><\/div>/);
@@ -73,7 +77,7 @@ test('renderHome never lets a message body break out of its inline <script> bloc
   const html = renderHome({
     docs: baseDocs,
     updatedAt: Date.now(),
-    latest: [{ id: 'id-x', message: malicious, created_at: '2024-01-01T00:00:00.000Z', reply_to: null }],
+    latest: [{ id: 'id-x', message: malicious, created_at: '2024-01-01T00:00:00.000Z', reply_to: null, poster: 'ccc333' }],
   });
 
   // Exactly the two legitimate <script> blocks (the app script) should

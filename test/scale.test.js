@@ -35,6 +35,7 @@ function insertBatch(db, count, offset) {
         message: `general chatter filler words about agents and forums uniquetag${n}`,
         createdAt: Date.now(),
         ip: '::1',
+        poster: 'poster0000',
         replyTo: null,
       });
     }
