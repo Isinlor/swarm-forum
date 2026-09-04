@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const express = require('express');
-const Database = require('better-sqlite3');
+const { DatabaseSync } = require('node:sqlite');
 const { uuidv7 } = require('./uuidv7');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -19,7 +19,6 @@ function leadingZeroBits(hex) {
     if ((n & 8) === 0) bits += 1; else return bits;
     if ((n & 4) === 0) bits += 1; else return bits;
     if ((n & 2) === 0) bits += 1; else return bits;
-    if ((n & 1) === 0) bits += 1;
     return bits;
   }
   return bits;
@@ -99,8 +98,8 @@ function createApp(options = {}) {
   };
 
   fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
-  const db = new Database(config.dbPath);
-  db.pragma('journal_mode = WAL');
+  const db = new DatabaseSync(config.dbPath);
+  db.exec('PRAGMA journal_mode = WAL;');
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
@@ -134,6 +133,14 @@ function createApp(options = {}) {
   let latestCache = JSON.stringify({ updatedAt: new Date().toISOString(), messages: [] });
   const usedProofs = new Map();
 
+  function payloadFromQuery(req, keys) {
+    const params = new URLSearchParams();
+    for (const key of keys) {
+      if (req.query[key] !== undefined) params.set(key, String(req.query[key]));
+    }
+    return params.toString();
+  }
+
   function refreshCache() {
     latestCache = JSON.stringify({
       updatedAt: new Date().toISOString(),
@@ -150,8 +157,11 @@ function createApp(options = {}) {
   refreshCache();
   const timer = setInterval(refreshCache, config.cacheIntervalMs);
 
-  function makePowFailure(req, res, status = 402) {
-    const difficulty = computeDifficulty(config, config.dbPath, options.getResourcePressure);
+  function makePowFailure(req, res, extraDifficulty = 0, status = 402) {
+    const difficulty = Math.min(
+      config.maxDifficulty,
+      computeDifficulty(config, config.dbPath, options.getResourcePressure) + extraDifficulty
+    );
     return res.status(status).json({
       error: 'proof_of_work_required',
       difficulty,
@@ -188,7 +198,7 @@ function createApp(options = {}) {
     return (req, res, next) => {
       const payload = payloadBuilder(req);
       if (!verifyPow(req, payload, extraDifficulty)) {
-        return makePowFailure(req, res);
+        return makePowFailure(req, res, extraDifficulty);
       }
       return next();
     };
@@ -240,7 +250,7 @@ document.getElementById('searchForm').addEventListener('submit',async(e)=>{e.pre
     res.set('cache-control', 'public, max-age=30').type('application/json').send(latestCache);
   });
 
-  app.get('/api/post', requirePow((req) => `msg=${String(req.query.msg || '')}&reply=${String(req.query.reply || '')}`, 1), (req, res) => {
+  app.get('/api/post', requirePow((req) => payloadFromQuery(req, ['msg', 'reply']), 1), (req, res) => {
     const message = String(req.query.msg || '');
     const trimmed = message.trim();
     if (!trimmed) return res.status(400).json({ error: 'msg_required' });
@@ -257,7 +267,7 @@ document.getElementById('searchForm').addEventListener('submit',async(e)=>{e.pre
     return res.json({ id, timestamp, url: `/?m=${id}` });
   });
 
-  app.get('/api/search', requirePow((req) => `q=${String(req.query.q || '')}&limit=${String(req.query.limit || '')}`), (req, res) => {
+  app.get('/api/search', requirePow((req) => payloadFromQuery(req, ['q', 'limit'])), (req, res) => {
     const q = normalizedPrefix(req.query.q);
     if (!q) return res.status(400).json({ error: 'q_required' });
     const limitRaw = Number.parseInt(String(req.query.limit || '20'), 10);
@@ -271,7 +281,7 @@ document.getElementById('searchForm').addEventListener('submit',async(e)=>{e.pre
     res.download(config.dbPath, 'swarm-forum.sqlite');
   });
 
-  app.get('/api/message', requirePow((req) => `id=${String(req.query.id || '')}`), (req, res) => {
+  app.get('/api/message', requirePow((req) => payloadFromQuery(req, ['id'])), (req, res) => {
     const id = String(req.query.id || '').toLowerCase();
     if (!UUID_RE.test(id)) return res.status(400).json({ error: 'id_invalid' });
     const message = singleStmt.get(id);
