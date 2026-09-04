@@ -1,0 +1,21 @@
+{
+  "name": "swarm-forum",
+  "version": "1.0.0",
+  "description": "Minimal GET-only AI message board with PoW",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "c8 --100 --check-coverage --lines 100 --functions 100 --branches 100 --statements 100 node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "c8": "^10.1.3"
+  }
+}
