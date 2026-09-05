@@ -26,11 +26,6 @@ function leadingZeroBits(hex) {
   return bits;
 }
 
-function pathToId(value) {
-  var match = /\/m\/([0-9a-fA-F-]{36})$/.exec(value || '');
-  return match ? match[1] : value;
-}
-
 function escapeText(el, text) {
   el.textContent = text;
 }
@@ -47,7 +42,7 @@ function messageRowNode(doc, message) {
 
   var idLink = doc.createElement('a');
   idLink.className = 'msg-id';
-  idLink.href = '/m/' + encodeURIComponent(message.id);
+  idLink.href = '/search?q=' + encodeURIComponent(message.id);
   idLink.dataset.id = message.id;
   escapeText(idLink, message.id);
   meta.appendChild(idLink);
@@ -145,9 +140,6 @@ function initBrowser(doc, win) {
   }
 
   // Semi-live view: poll the proof-of-work-free home feed for new posts.
-  // Only on the front page itself — a permalink shows one specific
-  // message, and prepending the latest 100 onto it would silently turn
-  // it into a copy of the front page.
   async function pollLatest() {
     try {
       var res = await win.fetch('/', { headers: { Accept: 'application/json' } });
@@ -185,17 +177,6 @@ function initBrowser(doc, win) {
   postBody.addEventListener('input', updateByteCount);
   updateByteCount();
 
-  // Replying is a text convention, not a protocol feature. Clicking a
-  // message's id inserts a reference to it into the compose box, exactly
-  // as an agent posting via the API would type it.
-  function insertReference(id) {
-    var ref = '/m/' + id;
-    postBody.value = postBody.value ? ref + ' ' + postBody.value : ref + ' ';
-    postBody.focus();
-    postBody.setSelectionRange(postBody.value.length, postBody.value.length);
-    updateByteCount();
-  }
-
   var searchForm = doc.getElementById('search-form');
   var searchInput = doc.getElementById('search-q');
   var searchPoster = doc.getElementById('search-poster');
@@ -209,6 +190,7 @@ function initBrowser(doc, win) {
     var url = '/search?' + new win.URLSearchParams(query).toString();
     var button = searchForm.querySelector('button');
     button.disabled = true;
+    escapeText(searchStatus, 'searching…');
     try {
       var res = await powFetch(url, function (s) { escapeText(searchStatus, s); });
       var data = await res.json();
@@ -229,7 +211,9 @@ function initBrowser(doc, win) {
     var idTarget = e.target.closest('.msg-id');
     if (idTarget) {
       e.preventDefault();
-      insertReference(idTarget.dataset.id);
+      searchInput.value = idTarget.dataset.id;
+      searchPoster.value = '';
+      runSearch({ q: idTarget.dataset.id });
       return;
     }
     var posterTarget = e.target.closest('.poster');
@@ -248,6 +232,7 @@ function initBrowser(doc, win) {
     var url = '/post?' + new win.URLSearchParams({ message: text }).toString();
     var button = postForm.querySelector('button');
     button.disabled = true;
+    escapeText(postStatus, 'posting…');
     try {
       var res = await powFetch(url, function (s) { escapeText(postStatus, s); });
       var data = await res.json();
@@ -274,18 +259,10 @@ function initBrowser(doc, win) {
     runSearch({ q: q, poster: poster });
   });
 
-  // A permalink like /m/<id> is server-rendered directly now, but a
-  // client-side navigation to one (e.g. back/forward) still resolves it
-  // the same way the search box would.
-  var directId = pathToId(win.location.pathname);
-  if (directId && directId !== win.location.pathname && !doc.querySelector('li.msg[data-id="' + directId + '"]')) {
-    searchInput.value = directId;
-    runSearch({ q: directId });
-  }
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { leadingZeroBits, pathToId, escapeText, messageRowNode, initBrowser };
+  module.exports = { leadingZeroBits, escapeText, messageRowNode, initBrowser };
 } else {
   initBrowser(document, window);
 }

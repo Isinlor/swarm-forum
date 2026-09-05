@@ -375,7 +375,7 @@ test('a reply-by-convention (parent id embedded in text) surfaces via search, or
     assert.equal('reply_to' in firstBody.message, false);
 
     const reply = await powFetch(ctx.base, '/post?' + new URLSearchParams({
-      message: `re: /m/${firstBody.message.id} thanks!`,
+      message: `re: ${firstBody.message.id} thanks!`,
     }));
     assert.equal(reply.status, 201);
 
@@ -520,72 +520,22 @@ test('combining q with before is rejected instead of silently ignoring the curso
   }
 });
 
-test('a permalink serves the app shell with that message rendered when HTML is explicitly requested, JSON (via /search) otherwise', async () => {
+test('the removed message route returns 404 and specific messages require paid search', async () => {
   const ctx = await startTestServer();
   try {
-    const posted = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'permalink target' }));
+    const posted = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'search target' }));
     const { message } = await posted.json();
 
-    const jsonByDefault = await fetch(`${ctx.base}/m/${message.id}`);
-    assert.match(jsonByDefault.headers.get('content-type'), /application\/json/);
+    const removed = await fetch(`${ctx.base}/m/${message.id}`);
+    assert.equal(removed.status, 404);
+    assert.deepEqual(await removed.json(), { error: 'not_found', detail: 'unknown endpoint; see GET /' });
 
-    const html = await fetch(`${ctx.base}/m/${message.id}`, { headers: { Accept: 'text/html' } });
-    assert.equal(html.status, 200);
-    assert.match(html.headers.get('content-type'), /text\/html/);
-    assert.equal(html.headers.get('vary'), 'Accept');
-    const htmlBody = await html.text();
-    assert.match(htmlBody, new RegExp(`rel="canonical" href="/m/${message.id}"`));
-    assert.match(htmlBody, new RegExp(message.id));
-
-    const uppercase = await fetch(`${ctx.base}/m/${message.id.toUpperCase()}`, { headers: { Accept: 'text/html' } });
-    assert.equal(uppercase.status, 200);
-    assert.match(await uppercase.text(), new RegExp(`rel="canonical" href="/m/${message.id}"`));
-
-    const json = await powFetch(ctx.base, `/m/${message.id.toUpperCase()}`, { headers: { Accept: 'application/json' } });
-    assert.equal(json.status, 200);
-    const data = await json.json();
-    assert.equal(data.query, message.id);
-    assert.equal(data.results[0].id, message.id);
+    const challenge = await fetch(`${ctx.base}/search?q=${message.id}`);
+    assert.equal(challenge.status, 402);
+    const found = await powFetch(ctx.base, `/search?q=${message.id.toUpperCase()}`);
+    assert.equal(found.status, 200);
+    assert.equal((await found.json()).results[0].id, message.id);
   } finally {
-    await ctx.close();
-  }
-});
-
-test('an HTML permalink request for a well-formed but missing id returns 404', async () => {
-  const ctx = await startTestServer();
-  try {
-    const res = await fetch(`${ctx.base}/m/01890a5d-ac96-774b-bcce-b302099a8057`, { headers: { Accept: 'text/html' } });
-    assert.equal(res.status, 404);
-    assert.equal((await res.json()).error, 'not_found');
-  } finally {
-    await ctx.close();
-  }
-});
-
-test('a path merely resembling /m/<id> without a valid id falls through to 404', async () => {
-  const ctx = await startTestServer();
-  try {
-    const res = await fetch(ctx.base + '/m/not-a-uuid');
-    assert.equal(res.status, 404);
-  } finally {
-    await ctx.close();
-  }
-});
-
-test('malformed permalink encoding is rejected as bad input without logging an internal error', async () => {
-  const ctx = await startTestServer();
-  const originalError = console.error;
-  const errors = [];
-  console.error = (...args) => errors.push(args);
-  try {
-    for (const path of ['/m/%', '/m/%C0%AF']) {
-      const res = await fetch(ctx.base + path);
-      assert.equal(res.status, 400);
-      assert.deepEqual(await res.json(), { error: 'bad_request', detail: 'malformed permalink' });
-    }
-    assert.deepEqual(errors, []);
-  } finally {
-    console.error = originalError;
     await ctx.close();
   }
 });

@@ -30,7 +30,7 @@ test('buildDocs reflects the given config into the endpoint descriptions and lim
   assert.equal(docs.limits.result_limit, 100);
   assert.ok(docs.endpoints['GET /']);
   assert.ok(docs.endpoints['GET /post?message=<text>']);
-  assert.ok(docs.endpoints['GET /m/<id>']);
+  assert.equal(docs.endpoints['GET /m/<id>'], undefined);
   assert.ok(Object.keys(docs.endpoints).some((k) => k.startsWith('GET /search?q=') && k.includes('poster=') && k.includes('before=')));
   assert.equal(docs.endpoints['GET /export'], undefined);
   assert.equal(docs.proof_of_work.algorithm, 'sha256');
@@ -39,7 +39,7 @@ test('buildDocs reflects the given config into the endpoint descriptions and lim
   assert.match(docs.endpoints['GET /post?message=<text>'], /server-side limit/);
   assert.match(docs.authorship, /sig/);
   assert.match(docs.privacy, /never written to disk/);
-  assert.match(docs.threading, /\/m\/<id>/);
+  assert.match(docs.threading, /include its id/);
   assert.match(docs.ids, /not separately stored/);
   assert.match(docs.performance, /poster/);
 });
@@ -59,7 +59,7 @@ test('renderHome embeds message metadata as HTML but never a raw message body', 
     updatedAt: Date.now(),
     latest: [
       { id: 'id-1', message: 'plain text', created_at: '2024-01-01T00:00:00.000Z', poster: 'aaa111' },
-      { id: 'id-2', message: 'a reply mentioning /m/id-1', created_at: '2024-01-01T00:00:01.000Z', poster: 'bbb222' },
+      { id: 'id-2', message: 'a reply mentioning id-1', created_at: '2024-01-01T00:00:01.000Z', poster: 'bbb222' },
     ],
   });
   assert.match(html, /<title>swarm-forum<\/title>/);
@@ -73,14 +73,6 @@ test('renderHome embeds message metadata as HTML but never a raw message body', 
   // an external, CSP-friendly <script src>
   assert.match(html, /<script src="\/client\.js"><\/script>/);
   assert.doesNotMatch(html, /<script>[\s\S]/);
-});
-
-test('renderHome adds a canonical link when a permalink path is given', () => {
-  const withCanonical = renderHome({ docs: baseDocs, updatedAt: Date.now(), latest: [], canonicalPath: '/m/some-id' });
-  assert.match(withCanonical, /<link rel="canonical" href="\/m\/some-id">/);
-
-  const without = renderHome({ docs: baseDocs, updatedAt: Date.now(), latest: [] });
-  assert.doesNotMatch(without, /rel="canonical"/);
 });
 
 test('renderHome never lets a message body break out of its JSON data island', () => {
