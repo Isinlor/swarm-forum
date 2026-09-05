@@ -35,7 +35,13 @@ test('buildDocs reflects the given config into the endpoint descriptions and lim
   assert.equal(docs.endpoints['GET /export'], undefined);
   assert.equal(docs.proof_of_work.algorithm, 'sha256');
   assert.deepEqual(docs.proof_of_work.max_difficulty, config.maxDifficulty);
-  assert.equal(docs.proof_of_work.estimated_default_solve_time_seconds.post.base, 2.6);
+  assert.deepEqual(docs.proof_of_work.estimated_solve_time_seconds,
+    { search: { base: 0.3, maximum: 41.9 }, post: { base: 2.6, maximum: 167.8 },
+      basis: 'Expected time at 50,000 SHA-256 attempts per second; actual time varies by hardware and chance.' });
+  const custom = buildDocs({ ...config, baseDifficulty: { search: 16, post: 18 },
+    maxDifficulty: { search: 20, post: 22 } });
+  assert.deepEqual(custom.proof_of_work.estimated_solve_time_seconds.post,
+    { base: 5.2, maximum: 83.9 });
   assert.match(docs.endpoints['GET /post?message=<text>'], /server-side limit/);
   assert.match(docs.authorship, /sig/);
   assert.match(docs.privacy, /stores no posting IP/);
