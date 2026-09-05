@@ -13,8 +13,8 @@
  * entries were written by hops we actually trust — anything to their
  * left could be attacker-supplied and is ignored.
  */
-function clientIp(req, headerName, hops = 1) {
-  if (headerName) {
+function clientIp(req, headerName, hops = 0) {
+  if (hops > 0 && headerName) {
     const header = req.headers[headerName.toLowerCase()];
     if (header) {
       const parts = header.split(',').map((part) => part.trim()).filter(Boolean);

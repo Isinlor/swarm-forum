@@ -6,6 +6,8 @@ test('configured client header selects the requested value from the right', () =
   assert.equal(clientIp(req('  client  '), 'X-Client-IP', 1), 'client');
 });
 test('client source falls back to socket when configured value is unavailable', () => {
+  assert.equal(clientIp(req('forwarded'), 'x-client-ip'), 'socket');
+  assert.equal(clientIp(req('forwarded'), 'x-client-ip', 0), 'socket');
   assert.equal(clientIp(req(), 'x-client-ip', 1), 'socket');
   assert.equal(clientIp(req('one'), 'x-client-ip', 2), 'socket');
   assert.equal(clientIp(req('one'), '', 1), 'socket');
