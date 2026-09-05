@@ -218,13 +218,12 @@ function createServer(overrides = {}) {
     const now = Date.now();
     const nonce = url.searchParams.get('pow');
     const ticket = url.searchParams.get('ticket');
-    const source = endpoint === 'post' ? clientIp(req, config.clientIpHeader, config.clientIpHops) : undefined;
     const verified = ticket && nonce && pow.verifyTicket(config.powSecret, instanceId,
-      url.pathname, url.searchParams, ticket, nonce, { now, source });
+      url.pathname, url.searchParams, ticket, nonce, { now });
     if (verified) return verified;
     const difficultyValue = resources.computeDifficulty(endpoint, computeState(), config.baseDifficulty, config.maxDifficulty);
     const challenge = pow.issueTicket(config.powSecret, instanceId, url.pathname, url.searchParams,
-      difficultyValue, { now, source });
+      difficultyValue, { now });
     sendJson(res, 402, { error: 'proof_of_work_required', ...challenge });
     return null;
   }

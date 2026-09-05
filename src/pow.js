@@ -33,10 +33,6 @@ function signature(secret, encoded) {
   return crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
 }
 
-function sourceBinding(secret, source) {
-  return crypto.createHmac('sha256', secret).update(source).digest('base64url');
-}
-
 function issueTicket(secret, instanceId, pathname, searchParams, difficulty, options = {}) {
   const now = options.now ?? Date.now();
   const payload = {
@@ -46,7 +42,6 @@ function issueTicket(secret, instanceId, pathname, searchParams, difficulty, opt
     j: crypto.randomBytes(16).toString('base64url'),
     i: instanceId,
   };
-  if (options.source !== undefined) payload.s = sourceBinding(secret, options.source);
   const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const ticket = `${encoded}.${signature(secret, encoded)}`;
   return { ticket, difficulty, algorithm: 'sha256', expires_at: payload.e,
@@ -71,8 +66,6 @@ function verifyTicket(secret, instanceId, pathname, searchParams, ticket, nonce,
   if (!payload || payload.i !== instanceId || payload.r !== requestHash ||
       !Number.isInteger(payload.d) || payload.d < 0 || payload.d > 256 ||
       !Number.isFinite(payload.e) || payload.e <= now || typeof payload.j !== 'string' ||
-      (options.source !== undefined && payload.s !== sourceBinding(secret, options.source)) ||
-      (options.source === undefined && payload.s !== undefined) ||
       !meetsDifficulty(ticket, nonce, payload.d)) return null;
   return payload;
 }
@@ -91,4 +84,4 @@ function createTicketStore() {
 }
 
 module.exports = { TICKET_LIFETIME_MS, canonicalRequest, leadingZeroBits, meetsDifficulty,
-  sourceBinding, issueTicket, verifyTicket, createTicketStore };
+  issueTicket, verifyTicket, createTicketStore };

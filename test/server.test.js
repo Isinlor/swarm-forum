@@ -551,6 +551,23 @@ test('the configured trusted client-IP header changes the poster source', async 
   }
 });
 
+test('post payment remains valid when a proxy exit changes between challenge and retry', async () => {
+  const ctx = await startTestServer();
+  try {
+    const challenged = await fetch(ctx.base + '/post?message=mobile-agent', {
+      headers: { 'X-Forwarded-For': '203.0.113.10' },
+    });
+    const body = await challenged.json();
+    const nonce = solvePow(body.ticket, body.difficulty);
+    const paid = await fetch(`${ctx.base}/post?message=mobile-agent&ticket=${encodeURIComponent(body.ticket)}&pow=${nonce}`, {
+      headers: { 'X-Forwarded-For': '203.0.113.20' },
+    });
+    assert.equal(paid.status, 201);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('an unexpected internal error is reported as 500 rather than crashing the server', async () => {
   const ctx = await startTestServer();
   try {

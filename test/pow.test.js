@@ -11,7 +11,7 @@ test('leadingZeroBits and meetsDifficulty count exact leading bits', () => {
   assert.equal(pow.leadingZeroBits('000f'), 12); assert.equal(pow.leadingZeroBits('8fff'), 0);
   assert.equal(pow.meetsDifficulty('x', 'n', 0), true);
 });
-test('signed tickets enforce request, difficulty, expiry, instance, source, and nonce', () => {
+test('signed tickets enforce request, difficulty, expiry, instance, and nonce', () => {
   const params = new URLSearchParams('message=hi');
   const issued = pow.issueTicket('secret', 'instance', '/post', params, 4, { now: 1000, lifetimeMs: 100 });
   const nonce = solve(issued.ticket, issued.difficulty);
@@ -23,11 +23,10 @@ test('signed tickets enforce request, difficulty, expiry, instance, source, and 
   assert.equal(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, nonce, { now: 1100 }), null);
   assert.equal(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, 'bad', { now: 1050 }), null);
 });
-test('post source binding is required and transfer-resistant', () => {
+test('tickets deliberately remain valid across network-source changes', () => {
   const params = new URLSearchParams('message=hi');
-  const issued = pow.issueTicket('secret', 'i', '/post', params, 0, { source: '1.2.3.4' });
-  assert.ok(pow.verifyTicket('secret', 'i', '/post', params, issued.ticket, 'n', { source: '1.2.3.4' }));
-  assert.equal(pow.verifyTicket('secret', 'i', '/post', params, issued.ticket, 'n', { source: '5.6.7.8' }), null);
+  const issued = pow.issueTicket('secret', 'i', '/post', params, 0);
+  assert.ok(pow.verifyTicket('secret', 'i', '/post', params, issued.ticket, 'n'));
 });
 test('ticket store consumes each id once and prunes expired ids', () => {
   const store = pow.createTicketStore(); assert.equal(store.consume('a', 20, 10), true);
@@ -48,7 +47,7 @@ test('every malformed signed ticket contract fails closed', () => {
   const r = crypto.createHash('sha256').update('/').digest('base64url');
   const good = { r, d: 0, e: Date.now() + 10000, j: 'id', i: 'i' };
   for (const bad of [null, { ...good, d: 1.5 }, { ...good, d: -1 }, { ...good, d: 257 },
-    { ...good, e: 'later' }, { ...good, j: 3 }, { ...good, s: 'unexpected' }])
+    { ...good, e: 'later' }, { ...good, j: 3 }])
     assert.equal(pow.verifyTicket('s', 'i', '/', params, signed(bad), 'n'), null);
   const encoded = Buffer.from('{').toString('base64url'); const malformed = encoded + '.' + crypto.createHmac('sha256', 's').update(encoded).digest('base64url');
   assert.equal(pow.verifyTicket('s', 'i', '/', params, malformed, 'n'), null);
