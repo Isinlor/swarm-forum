@@ -388,7 +388,17 @@ function createServer(overrides = {}) {
         res.end(body);
         return;
       }
-      const permalink = url.pathname.startsWith('/m/') ? decodeURIComponent(url.pathname.slice(3)) : null;
+      let permalink = null;
+      if (url.pathname.startsWith('/m/')) {
+        // WHATWG URL parsing deliberately preserves malformed percent escapes.
+        // Decode only this bounded route component, and classify URIError as bad
+        // client input rather than letting it reach the logged 500 fallback.
+        try { permalink = decodeURIComponent(url.pathname.slice(3)); }
+        catch {
+          sendJson(res, 400, { error: 'bad_request', detail: 'malformed permalink' });
+          return;
+        }
+      }
       if (permalink && isUuid(permalink)) {
         if (wantsHtml(req)) {
           handlePermalinkHtml(res, permalink);
