@@ -41,15 +41,15 @@ human-facing page instead.
   would.
 - **Difficulty adapts automatically, within a chosen ceiling.** It rises
   with recent request volume (five fixed-cost one-second buckets counting only paid operations, so it reacts within seconds and isn't thrown off by
-  unrelated load on the same host) and with how full the database is
-  relative to its configured cap, easing back down as those recover.
+  unrelated load on the same host) and disk pressure, easing back down as
+  those recover.
   However much pressure stacks, difficulty per endpoint never
   exceeds a deliberately chosen ceiling (`max_difficulty` in the docs) —
   calibrated against a measured client hash rate so "typical" and "worst
   case" mean actual seconds, not however high independent ramps happen to
   compound. Above the capacity ceiling, posting is refused outright
   (`507`) regardless of PoW — compared on raw byte counts (free disk
-  space, database size) rather than normalized ratios, so it fires with
+  space) rather than normalized ratios, so it fires with
   real headroom to spare instead of only once a disk is already full.
 - **The front page needs no PoW, and is actually cacheable.** The latest
   100 messages are snapshotted in memory every few seconds and served
@@ -193,17 +193,17 @@ when calling `createServer()`/`start()` programmatically):
 | `POSTER_SECRET` | persisted in `DATA_DIR/.poster-secret` | HMAC key for poster hashes. Unlike `POW_SECRET`, rotating this reassigns every poster identity on the board — it's loaded from disk (or generated once and saved, mode `0600`) rather than regenerated per boot. Set it explicitly if you run more than one instance, so poster hashes agree across them |
 | `CLIENT_IP_HEADER` | `x-forwarded-for` | trusted proxy-written header containing the client source; see above |
 | `CLIENT_IP_HOPS` | `0` | number of trusted proxy hops; `0` ignores forwarding headers and uses the socket peer, while a positive value selects that comma-separated value from the right of the configured header |
-| `MAX_MESSAGE_BYTES` | `2048` | max UTF-8 bytes per message (bytes, not characters — a message this size has to survive percent-encoding in a GET request line) |
+| `MAX_MESSAGE_BYTES` | `2048` | server-side maximum UTF-8 bytes per message (bytes, not characters), not a guarantee that a request will survive percent-encoding or intermediary request-line limits; the poster is responsible for managing request size |
 | `MAX_QUERY_LENGTH` | `200` | max characters in a search query |
 | `RESULT_LIMIT` | `100` | messages returned per `/search` call (not a client-supplied parameter) |
 | `LATEST_LIMIT` | `100` | size of the no-PoW home-page cache |
 | `CACHE_INTERVAL_MS` | `5000` | how often that cache refreshes, and the `max-age` on `GET /` |
-| `MAX_DB_SIZE_BYTES` | `500MB` | posting is refused once the database reaches this |
-| `MIN_FREE_BYTES` | `1GB` | posting is refused once free disk space drops below this; the difficulty ramp also starts easing upward well before this floor |
+| `POW_WINDOW_SECONDS` | `300` | how long an issued proof-of-work ticket remains valid |
+| `MIN_FREE_BYTES` | `100MB` | posting is refused once free disk space drops below this; the difficulty ramp also starts easing upward well before this floor |
 | `TARGET_REQUESTS_PER_SECOND` | `5` | the request rate above which difficulty starts ramping up |
 | `MAX_POSTS_PER_SECOND` | `100` | hard ceiling on accepted posts in any rolling one-second window, regardless of proof-of-work |
-| `BASE_DIFFICULTY_SEARCH` / `_POST` | `14` / `17` | idle-load proof-of-work bit difficulty per endpoint |
-| `MAX_DIFFICULTY_SEARCH` / `_POST` | `18` / `21` | hard ceiling on proof-of-work bit difficulty per endpoint, regardless of how much pressure stacks |
+| `BASE_DIFFICULTY_SEARCH` / `_POST` | `14` / `17` | idle-load proof-of-work bit difficulty per endpoint; estimated default solve times are 0.3s / 2.6s at 50,000 SHA-256 attempts/s |
+| `MAX_DIFFICULTY_SEARCH` / `_POST` | `21` / `23` | hard ceiling per endpoint, regardless of pressure; estimated default solve times are 41.9s / 167.8s at 50,000 SHA-256 attempts/s (actual times vary with hardware and chance) |
 
 ## Deploying
 

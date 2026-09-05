@@ -10,22 +10,18 @@ const fs = require('node:fs');
 // project's own implementation measured ~120,000/s in Node on ordinary
 // hardware) so "typical" and "worst case" mean actual seconds, not an
 // accident of how the ramp happens to compound:
-//   post:   base 17 bits ≈ 2.6-6s typical; capped at 21 bits ≈ 42-17s worst case
-//   search: base 14 bits ≈ 0.3-0.1s typical; capped at 18 bits ≈ 5-2s worst case
+// At the conservative 50,000 hashes/s rate, the default expected times are:
+//   post:   base 17 bits ≈ 2.6s; capped at 23 bits ≈ 167.8s
+//   search: base 14 bits ≈ 0.3s; capped at 21 bits ≈ 41.9s
 const BASE_DIFFICULTY = {
   search: 14,
   post: 17,
 };
 
 const MAX_DIFFICULTY = {
-  search: 18,
-  post: 21,
+  search: 21,
+  post: 23,
 };
-
-function dbUsageRatio(dbSizeBytes, maxDbSizeBytes) {
-  if (!maxDbSizeBytes) return 0;
-  return Math.min(dbSizeBytes / maxDbSizeBytes, 2);
-}
 
 function freeDiskBytes(dir) {
   const stats = fs.statfsSync(dir);
@@ -64,9 +60,8 @@ function computeDifficulty(endpoint, state, baseDifficulty = BASE_DIFFICULTY, ma
   const base = baseDifficulty[endpoint];
   if (base === undefined) throw new Error(`unknown endpoint: ${endpoint}`);
   const load = extraBits(state.loadRatio, 0.6, 1.5, 8);
-  const db = extraBits(state.dbUsageRatio, 0.5, 2, 12);
   const disk = extraBits(state.diskPressureRatio, 0.5, 2, 12);
-  const total = base + load + db + disk;
+  const total = base + load + disk;
   const cap = maxDifficulty[endpoint];
   return cap === undefined ? total : Math.min(total, cap);
 }
@@ -77,20 +72,16 @@ function computeDifficulty(endpoint, state, baseDifficulty = BASE_DIFFICULTY, ma
  * the real numbers so the ceiling fires while there's still headroom
  * equal to the configured floor. */
 function isOverCapacity(state) {
-  const dbOverCap = state.maxDbSizeBytes > 0 && state.dbSizeBytes >= state.maxDbSizeBytes;
   const diskOverCap = state.minFreeBytes > 0 && state.freeBytes < state.minFreeBytes;
-  return dbOverCap || diskOverCap;
+  return diskOverCap;
 }
 
-function currentState({ dbSizeBytes, maxDbSizeBytes, dataDir, minFreeBytes, loadRatio }) {
+function currentState({ dataDir, minFreeBytes, loadRatio }) {
   const freeBytes = freeDiskBytes(dataDir);
   return {
     loadRatio,
-    dbSizeBytes,
-    maxDbSizeBytes,
     freeBytes,
     minFreeBytes,
-    dbUsageRatio: dbUsageRatio(dbSizeBytes, maxDbSizeBytes),
     diskPressureRatio: diskPressureRatio(freeBytes, minFreeBytes),
   };
 }
@@ -98,7 +89,6 @@ function currentState({ dbSizeBytes, maxDbSizeBytes, dataDir, minFreeBytes, load
 module.exports = {
   BASE_DIFFICULTY,
   MAX_DIFFICULTY,
-  dbUsageRatio,
   freeDiskBytes,
   diskPressureRatio,
   extraBits,
