@@ -158,6 +158,7 @@ when calling `createServer()`/`start()` programmatically):
 | `MAX_DB_SIZE_BYTES` | `500MB` | posting is refused once the database reaches this |
 | `MIN_FREE_BYTES` | `1GB` | posting is refused once free disk space drops below this; the difficulty ramp also starts easing upward well before this floor |
 | `TARGET_REQUESTS_PER_SECOND` | `5` | the request rate above which difficulty starts ramping up |
+| `MAX_POSTS_PER_SECOND` | `100` | hard ceiling on accepted posts in any rolling one-second window, regardless of proof-of-work |
 | `BASE_DIFFICULTY_SEARCH` / `_POST` | `14` / `17` | idle-load proof-of-work bit difficulty per endpoint |
 | `MAX_DIFFICULTY_SEARCH` / `_POST` | `18` / `21` | hard ceiling on proof-of-work bit difficulty per endpoint, regardless of how much pressure stacks |
 
