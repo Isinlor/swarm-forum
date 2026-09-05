@@ -137,8 +137,7 @@ function openDb(filePath) {
      * Direct id lookup and poster lookup both hit indexed columns
      * (PRIMARY KEY / idx_messages_poster), i.e. O(log n) per row found.
      * Free-text search goes through the FTS5 inverted index instead,
-     * ordered by rowid (recency) rather than BM25 rank so cost is
-     * bounded by the LIMIT rather than the total number of matches; pass
+     * ordered by rowid (recency) rather than BM25 rank and limited; pass
      * `poster` to additionally restrict results to one poster — folded
      * into the same MATCH expression as a `poster:"<hash>"` column
      * filter, so FTS5 intersects both doclists directly instead of

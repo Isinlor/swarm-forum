@@ -8,8 +8,7 @@ const crypto = require('node:crypto');
  * Loads a persisted secret from `filePath`, or generates and writes a new
  * one (mode 0600, so only the owner can read it) if none exists yet.
  * Used for the poster-hashing secret, which — unlike the proof-of-work
- * secret — must survive restarts: rotating it would silently reassign
- * every poster hash on the board.
+ * secret — it must survive restarts to keep future hashes consistent.
  */
 function loadOrCreateSecret(filePath) {
   try {
