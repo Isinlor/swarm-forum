@@ -155,20 +155,6 @@ function memoize(fn, ttlMs) {
   };
 }
 
-/**
- * Tracks, per (endpoint, time-window) slot, the lowest difficulty ever
- * advertised in that slot. `issue()` — called when sending a 402 —
- * always computes a fresh value from current load, so the ramp reacts
- * within the request that triggers it rather than lagging up to a whole
- * slot behind; folding that value into the slot's running minimum is
- * what `verify()` then checks a submitted nonce against. Judging by the
- * minimum (not the first-seen or the latest value) means a nonce solved
- * against whatever a client was actually told is never later rejected
- * just because load moved between issuance and verification — every
- * value the tracker recorded for a slot is a real number this process
- * advertised to someone in it, so honoring the easiest of them costs
- * nothing verification is meant to protect. Bounded size, no disk usage.
- */
 function createServer(overrides = {}) {
   const config = loadConfig(overrides);
   if (!config.posterSecret) {
@@ -221,8 +207,11 @@ function createServer(overrides = {}) {
     const ticket = url.searchParams.get('ticket');
     const verified = ticket && nonce && pow.verifyTicket(config.powSecret, instanceId,
       url.pathname, url.searchParams, ticket, nonce, { now });
-    if (verified) return verified;
     const difficultyValue = resources.computeDifficulty(endpoint, computeState(), config.baseDifficulty, config.maxDifficulty);
+    // A signed ticket proves what difficulty was advertised, but an old easy
+    // ticket must not become a way to bypass a load-driven increase. Tickets
+    // from a harder period remain valid when pressure falls.
+    if (verified && verified.d >= difficultyValue) return verified;
     const challenge = pow.issueTicket(config.powSecret, instanceId, url.pathname, url.searchParams,
       difficultyValue, { now, lifetimeMs: config.powWindowSeconds * 1000 });
     sendJson(res, 402, { error: 'proof_of_work_required', ...challenge });
