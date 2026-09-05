@@ -118,7 +118,7 @@ test('search and lookup cost stay bounded as the table scales to 500k rows', { t
     const smallGetMs = avgMs(() => db.getById(db.walk(1)[0].id), SAMPLES);
 
     bulkInsertFiller(db, LARGE_N - SMALL_N, SMALL_N);
-    assert.equal(db.count(), LARGE_N + sanityCount);
+    assert.equal(db.raw.prepare('SELECT COUNT(*) AS n FROM messages').get().n, LARGE_N + sanityCount);
 
     const largeId = db.walk(1)[0].id;
     const largeGetMs = avgMs(() => db.getById(largeId), SAMPLES);

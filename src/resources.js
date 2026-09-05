@@ -89,11 +89,9 @@ function createDifficultyController(requiredDifficulty, now = Date.now()) {
   };
 }
 
-/** Refuses posting on raw byte comparisons, not on the normalized ratios
- * above: diskPressureRatio reaches its own "1" only once free space is
- * exactly zero, by which point SQLite is already failing writes. Compare
- * the real numbers so the ceiling fires while there's still headroom
- * equal to the configured floor. */
+/** Refuses posting on raw byte comparisons, not on normalized ratios:
+ * diskPressureRatio reaches 1 at the configured free-space floor. Comparing
+ * the real numbers keeps this capacity boundary explicit. */
 function isOverCapacity(state) {
   const diskOverCap = state.minFreeBytes > 0 && state.freeBytes < state.minFreeBytes;
   return diskOverCap;

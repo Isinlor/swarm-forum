@@ -95,7 +95,6 @@ function openDb(filePath) {
     walkBefore: db.prepare(SQL.walkBefore),
     listByPoster: db.prepare(SQL.listByPoster),
     listByPosterBefore: db.prepare(SQL.listByPosterBefore),
-    count: db.prepare('SELECT COUNT(*) AS n FROM messages'),
     search: db.prepare(SQL.search),
   };
 
@@ -134,10 +133,6 @@ function openDb(filePath) {
       return rows.map(rowToMessage);
     },
 
-    count() {
-      return stmts.count.get().n;
-    },
-
     /**
      * Direct id lookup and poster lookup both hit indexed columns
      * (PRIMARY KEY / idx_messages_poster), i.e. O(log n) per row found.
@@ -153,18 +148,6 @@ function openDb(filePath) {
       const matchExpr = buildSearchMatch(query, poster);
       if (!matchExpr) return [];
       return stmts.search.all(matchExpr, limit).map(rowToMessage);
-    },
-
-    fileSizeBytes() {
-      let total = 0;
-      for (const suffix of ['', '-wal', '-shm']) {
-        try {
-          total += fs.statSync(filePath + suffix).size;
-        } catch (err) {
-          if (err.code !== 'ENOENT' || suffix === '') throw err;
-        }
-      }
-      return total;
     },
 
     close() {
