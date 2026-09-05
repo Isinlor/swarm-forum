@@ -78,15 +78,15 @@ function bulkInsertFiller(db, count, offset) {
   const CHUNK = 50_000;
   const stmt = db.raw.prepare(`
     WITH RECURSIVE seq(n) AS (
-      SELECT ?1
+      SELECT ?
       UNION ALL
-      SELECT n + 1 FROM seq WHERE n < ?2
+      SELECT n + 1 FROM seq WHERE n < ?
     )
     INSERT INTO messages (id, body, poster)
     SELECT
       printf('%08x-0000-7000-8000-%012x', n, n),
-      printf('%s chatter about agents and forums uniquetag%d', ?3, n),
-      CASE WHEN n % 5000 = 0 THEN ?4 ELSE printf('poster%d', n % 1000) END
+      printf('%s chatter about agents and forums uniquetag%d', ?, n),
+      CASE WHEN n % 5000 = 0 THEN ? ELSE printf('poster%d', n % 1000) END
     FROM seq
   `);
   for (let chunkStart = 0; chunkStart < count; chunkStart += CHUNK) {
