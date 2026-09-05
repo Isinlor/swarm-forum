@@ -24,7 +24,9 @@ test('loadConfig applies overrides and reads env', () => {
   assert.equal(defaultDataDir.resultLimit, 100);
   assert.equal(defaultDataDir.maxPostsPerSecond, 100);
   assert.equal(defaultDataDir.minFreeBytes, 100 * 1024 * 1024);
-  assert.equal(defaultDataDir.powWindowSeconds, 300);
+  assert.equal(defaultDataDir.powWindowSeconds, 600);
+  assert.equal(defaultDataDir.targetSearchRequestsPerSecond, 100);
+  assert.equal(defaultDataDir.targetPostRequestsPerSecond, 5);
   assert.equal(defaultDataDir.maxDbSizeBytes, undefined);
 
   const defaultBaseDifficulty = loadConfig({ env: {} });
@@ -41,6 +43,8 @@ test('loadConfig applies overrides and reads env', () => {
     RESULT_LIMIT: '50',
     MAX_POSTS_PER_SECOND: '25',
     POW_WINDOW_SECONDS: '600',
+    TARGET_SEARCH_REQUESTS_PER_SECOND: '200',
+    TARGET_POST_REQUESTS_PER_SECOND: '10',
   } });
   assert.equal(envOverrides.baseDifficulty.post, 30);
   assert.equal(envOverrides.maxDifficulty.post, 40);
@@ -50,6 +54,8 @@ test('loadConfig applies overrides and reads env', () => {
   assert.equal(envOverrides.resultLimit, 50);
   assert.equal(envOverrides.maxPostsPerSecond, 25);
   assert.equal(envOverrides.powWindowSeconds, 600);
+  assert.equal(envOverrides.targetSearchRequestsPerSecond, 200);
+  assert.equal(envOverrides.targetPostRequestsPerSecond, 10);
 
   const overrideBaseDifficulty = loadConfig({ baseDifficulty: { search: 1, post: 2 }, maxDifficulty: { search: 10, post: 20 } });
   assert.deepEqual(overrideBaseDifficulty.baseDifficulty, { search: 1, post: 2 });
@@ -236,7 +242,7 @@ test('POST /post without proof-of-work is challenged with 402, before any valida
     assert.equal(body.error, 'proof_of_work_required');
     assert.equal(typeof body.ticket, 'string');
     assert.equal(typeof body.difficulty, 'number');
-    assert.equal(body.expires_in, 300);
+    assert.equal(body.expires_in, 600);
 
     // Even a request with no `message` at all is gated first: nothing
     // about the request's validity is inspected before payment.
@@ -654,6 +660,7 @@ test('configuration and Accept quality values are validated strictly', () => {
   const { wantsHtml } = require('../src/server');
   for (const overrides of [
     { maxMessageBytes: 0 }, { maxPostsPerSecond: 0 }, { minFreeBytes: -1 },
+    { targetSearchRequestsPerSecond: 0 }, { targetPostRequestsPerSecond: 0 },
     { clientIpHops: -1 }, { clientIpHops: 1.5 },
     { clientIpHeader: 'bad header' }, { baseDifficulty: { search: -1, post: 1 } },
     { maxDifficulty: { search: 257, post: 21 } }, { env: { PORT: 'nope' } },
@@ -674,6 +681,9 @@ test('a successful ticket is single-use', async () => {
     assert.equal((await fetch(paid)).status, 200);
     const replay = await fetch(paid); assert.equal(replay.status, 409);
     assert.equal((await replay.json()).error, 'ticket_already_used');
+    const noNonce = await fetch(`${ctx.base}/search?q=changed&ticket=${encodeURIComponent(body.ticket)}`);
+    assert.equal(noNonce.status, 409);
+    assert.equal((await noNonce.json()).error, 'ticket_already_used');
   } finally { await ctx.close(); }
 });
 
@@ -725,7 +735,7 @@ test('a paid post fails closed when its final capacity measurement fails', async
   const ctx = await startTestServer();
   try {
     // Prime the memoized approximate state, then make only the mandatory final reading fail.
-    ctx.server.swarmForum.computeState();
+    ctx.server.swarmForum.computeState('post');
     const challenge = await fetch(ctx.base + '/post?message=capacity-check');
     const body = await challenge.json();
     const nonce = solvePow(body.ticket, body.difficulty);

@@ -69,9 +69,10 @@ function loadConfig(overrides = {}) {
     resultLimit: num('resultLimit', num('RESULT_LIMIT', 100)),
     latestLimit: num('latestLimit', num('LATEST_LIMIT', 100)),
     cacheIntervalMs: num('cacheIntervalMs', num('CACHE_INTERVAL_MS', 5000)),
-    powWindowSeconds: num('powWindowSeconds', num('POW_WINDOW_SECONDS', 300)),
+    powWindowSeconds: num('powWindowSeconds', num('POW_WINDOW_SECONDS', 600)),
     minFreeBytes: num('minFreeBytes', num('MIN_FREE_BYTES', 100 * 1024 * 1024)),
-    targetRequestsPerSecond: num('targetRequestsPerSecond', num('TARGET_REQUESTS_PER_SECOND', 5)),
+    targetSearchRequestsPerSecond: num('targetSearchRequestsPerSecond', num('TARGET_SEARCH_REQUESTS_PER_SECOND', 100)),
+    targetPostRequestsPerSecond: num('targetPostRequestsPerSecond', num('TARGET_POST_REQUESTS_PER_SECOND', 5)),
     maxPostsPerSecond: num('maxPostsPerSecond', num('MAX_POSTS_PER_SECOND', 100)),
     baseDifficulty: overrides.baseDifficulty || {
       search: num('baseDifficultySearch', num('BASE_DIFFICULTY_SEARCH', resources.BASE_DIFFICULTY.search)),
@@ -83,7 +84,8 @@ function loadConfig(overrides = {}) {
     },
   };
   const positive = ['maxMessageBytes', 'maxQueryLength', 'resultLimit', 'latestLimit',
-    'cacheIntervalMs', 'powWindowSeconds', 'targetRequestsPerSecond', 'maxPostsPerSecond'];
+    'cacheIntervalMs', 'powWindowSeconds', 'targetSearchRequestsPerSecond',
+    'targetPostRequestsPerSecond', 'maxPostsPerSecond'];
   const nonnegative = ['port', 'minFreeBytes'];
   const integers = [...positive, ...nonnegative, 'clientIpHops'];
   for (const name of integers) if (!Number.isInteger(config[name])) throw new Error(`${name} must be an integer`);
@@ -102,6 +104,16 @@ function loadConfig(overrides = {}) {
 
 function sendJson(res, status, body, cacheControl = 'no-store', extraHeaders = {}) {
   const payload = JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(payload),
+    'Cache-Control': cacheControl,
+    ...extraHeaders,
+  });
+  res.end(payload);
+}
+
+function sendSerializedJson(res, status, payload, cacheControl, extraHeaders) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(payload),
@@ -171,16 +183,19 @@ function createServer(overrides = {}) {
   }
 
   const db = openDb(config.dbFile);
-  const cache = createLatestCache(db, { intervalMs: config.cacheIntervalMs, limit: config.latestLimit });
-  const rateTracker = createRequestRateTracker();
+  const rateTrackers = { search: createRequestRateTracker(), post: createRequestRateTracker() };
+  const rateTargets = {
+    search: config.targetSearchRequestsPerSecond,
+    post: config.targetPostRequestsPerSecond,
+  };
   const postRateLimiter = createPerSecondLimiter(config.maxPostsPerSecond);
   const instanceId = crypto.randomBytes(16).toString('base64url');
   const tickets = pow.createTicketStore(config.powWindowSeconds * 1000);
 
-  const computeState = memoize(() => resources.currentState({
+  const computeDiskState = memoize(() => resources.currentState({
     dataDir: config.dataDir,
     minFreeBytes: config.minFreeBytes,
-    loadRatio: rateTracker.ratePerSecond() / config.targetRequestsPerSecond,
+    loadRatio: 0,
   }), 1000);
 
   const docs = () => buildDocs({
@@ -195,6 +210,22 @@ function createServer(overrides = {}) {
     baseDifficulty: config.baseDifficulty,
     maxDifficulty: config.maxDifficulty,
   });
+  const cache = createLatestCache(db, {
+    intervalMs: config.cacheIntervalMs,
+    limit: config.latestLimit,
+    serialize: (snapshot) => ({
+      ...docs(),
+      updated_at: new Date(snapshot.updatedAt).toISOString(),
+      latest_messages: snapshot.messages.map(renderMessageJson),
+    }),
+    render: (snapshot) => renderHome({
+      docs: docs(), latest: snapshot.messages, updatedAt: snapshot.updatedAt,
+    }),
+  });
+  const computeState = (endpoint) => ({ ...computeDiskState(),
+    loadRatio: rateTrackers[endpoint].ratePerSecond() / rateTargets[endpoint] });
+  const difficulty = resources.createDifficultyController((endpoint) =>
+    resources.computeDifficulty(endpoint, computeState(endpoint), config.baseDifficulty, config.maxDifficulty));
 
   /** Returns true (request may proceed) once a valid proof is present;
    * otherwise sends a 402 challenge and returns false. This is always
@@ -203,11 +234,18 @@ function createServer(overrides = {}) {
    * costs the server anything beyond reading its own query string. */
   function gate(req, res, url, endpoint) {
     const now = Date.now();
-    const nonce = url.searchParams.get('pow');
     const ticket = url.searchParams.get('ticket');
-    const verified = ticket && nonce && pow.verifyTicket(config.powSecret, instanceId,
-      url.pathname, url.searchParams, ticket, nonce, { now });
-    const difficultyValue = resources.computeDifficulty(endpoint, computeState(), config.baseDifficulty, config.maxDifficulty);
+    const authenticated = pow.authenticateTicket(config.powSecret, ticket);
+    // Authentication makes the id trustworthy; checking replay here avoids
+    // request hashing and attacker-selected proof verification for spent work.
+    if (authenticated && tickets.has(authenticated.j)) {
+      sendJson(res, 409, { error: 'ticket_already_used' });
+      return null;
+    }
+    const nonce = url.searchParams.get('pow');
+    const verified = pow.verifyAuthenticatedTicket(instanceId, url.pathname, url.searchParams,
+      ticket, nonce, authenticated, { now });
+    const difficultyValue = difficulty.get(endpoint, now);
     // A signed ticket proves what difficulty was advertised, but an old easy
     // ticket must not become a way to bypass a load-driven increase. Tickets
     // from a harder period remain valid when pressure falls.
@@ -218,10 +256,9 @@ function createServer(overrides = {}) {
     return null;
   }
 
-  function consume(ticket) {
-    if (!tickets.consume(ticket.j)) return false;
-    rateTracker.record();
-    return true;
+  function consume(endpoint, ticket) {
+    tickets.consume(ticket.j);
+    rateTrackers[endpoint].record();
   }
 
   const homeCacheControl = () => `public, max-age=${Math.round(config.cacheIntervalMs / 1000)}`;
@@ -229,15 +266,10 @@ function createServer(overrides = {}) {
   function handleHome(req, res) {
     const snapshot = cache.get();
     if (!wantsHtml(req)) {
-      sendJson(res, 200, {
-        ...docs(),
-        updated_at: new Date(snapshot.updatedAt).toISOString(),
-        latest_messages: snapshot.messages.map(renderMessageJson),
-      }, homeCacheControl(), { Vary: 'Accept' });
+      sendSerializedJson(res, 200, snapshot.json, homeCacheControl(), { Vary: 'Accept' });
       return;
     }
-    const html = renderHome({ docs: docs(), latest: snapshot.messages, updatedAt: snapshot.updatedAt });
-    sendHtml(res, 200, html, homeCacheControl(), { Vary: 'Accept' });
+    sendHtml(res, 200, snapshot.html, homeCacheControl(), { Vary: 'Accept' });
   }
 
   function handlePermalinkHtml(res, id) {
@@ -258,7 +290,7 @@ function createServer(overrides = {}) {
   function handlePost(req, res, url) {
     // A cheap, cached read — refusing outright when the board is over
     // capacity costs nothing worth gating, so it can run ahead of gate().
-    if (resources.isOverCapacity(computeState())) {
+    if (resources.isOverCapacity(computeDiskState())) {
       sendJson(res, 507, { error: 'insufficient_storage', detail: 'the board is at capacity; try again later' });
       return;
     }
@@ -283,11 +315,11 @@ function createServer(overrides = {}) {
     }
     let finalState;
     try { finalState = resources.currentState({ dataDir: config.dataDir,
-      minFreeBytes: config.minFreeBytes, loadRatio: rateTracker.ratePerSecond() / config.targetRequestsPerSecond }); }
+      minFreeBytes: config.minFreeBytes }); }
     catch (err) { console.error('swarm-forum: final capacity measurement failed', err);
       sendJson(res, 507, { error: 'insufficient_storage', detail: 'capacity could not be verified' }); return; }
     if (resources.isOverCapacity(finalState)) { sendJson(res, 507, { error: 'insufficient_storage', detail: 'the board is at capacity; try again later' }); return; }
-    if (!consume(paid)) { sendJson(res, 409, { error: 'ticket_already_used' }); return; }
+    consume('post', paid);
     if (!postRateLimiter.take()) {
       sendJson(res, 429, { error: 'rate_limit_exceeded', detail: `at most ${config.maxPostsPerSecond} posts are accepted per second` },
         'no-store', { 'Retry-After': '1' });
@@ -335,7 +367,7 @@ function createServer(overrides = {}) {
       return;
     }
 
-    if (!consume(paid)) { sendJson(res, 409, { error: 'ticket_already_used' }); return; }
+    consume('search', paid);
     let results;
     if (q && isUuid(q)) {
       // The id itself is an exact, indexed lookup. Anything *referencing*

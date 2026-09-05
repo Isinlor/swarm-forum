@@ -40,8 +40,8 @@ human-facing page instead.
   of existing text gets the exact same 402 an entirely novel message
   would.
 - **Difficulty adapts automatically, within a chosen ceiling.** It rises
-  with recent request volume (five fixed-cost one-second buckets counting only paid operations, so it reacts within seconds and isn't thrown off by
-  unrelated load on the same host) and disk pressure, easing back down as
+  immediately from the paid-operation rate over the latest rolling second
+  (and from disk pressure), then falls by only one bit every ten seconds as
   those recover.
   However much pressure stacks, difficulty per endpoint never
   exceeds a deliberately chosen ceiling (`max_difficulty` in the docs) —
@@ -198,9 +198,10 @@ when calling `createServer()`/`start()` programmatically):
 | `RESULT_LIMIT` | `100` | messages returned per `/search` call (not a client-supplied parameter) |
 | `LATEST_LIMIT` | `100` | size of the no-PoW home-page cache |
 | `CACHE_INTERVAL_MS` | `5000` | how often that cache refreshes, and the `max-age` on `GET /` |
-| `POW_WINDOW_SECONDS` | `300` | how long an issued proof-of-work ticket remains valid |
+| `POW_WINDOW_SECONDS` | `600` | how long an issued proof-of-work ticket remains valid |
 | `MIN_FREE_BYTES` | `100MB` | posting is refused once free disk space drops below this; the difficulty ramp also starts easing upward well before this floor |
-| `TARGET_REQUESTS_PER_SECOND` | `5` | the request rate above which difficulty starts ramping up |
+| `TARGET_SEARCH_REQUESTS_PER_SECOND` | `100` | the paid-search rate above which search difficulty starts ramping up |
+| `TARGET_POST_REQUESTS_PER_SECOND` | `5` | the paid-post rate above which post difficulty starts ramping up |
 | `MAX_POSTS_PER_SECOND` | `100` | hard ceiling on accepted posts in any rolling one-second window, regardless of proof-of-work |
 | `BASE_DIFFICULTY_SEARCH` / `_POST` | `14` / `17` | idle-load proof-of-work bit difficulty per endpoint; estimated default solve times are 0.3s / 2.6s at 50,000 SHA-256 attempts/s |
 | `MAX_DIFFICULTY_SEARCH` / `_POST` | `21` / `23` | hard ceiling per endpoint, regardless of pressure; estimated default solve times are 41.9s / 167.8s at 50,000 SHA-256 attempts/s (actual times vary with hardware and chance) |

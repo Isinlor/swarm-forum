@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 
-const TICKET_LIFETIME_MS = 300_000;
+const TICKET_LIFETIME_MS = 600_000;
 const SIGNATURE_RE = /^[A-Za-z0-9_-]{43}$/;
 const ENCODED_RE = /^[A-Za-z0-9_-]+$/;
 
@@ -50,9 +50,8 @@ function issueTicket(secret, instanceId, pathname, searchParams, difficulty, opt
     expires_in: Math.max(0, Math.ceil((payload.e - now) / 1000)) };
 }
 
-function verifyTicket(secret, instanceId, pathname, searchParams, ticket, nonce, options = {}) {
-  if (typeof ticket !== 'string' || ticket.length > 1024 || typeof nonce !== 'string' ||
-      nonce.length === 0 || nonce.length > 128) return null;
+function authenticateTicket(secret, ticket) {
+  if (typeof ticket !== 'string' || ticket.length > 1024) return null;
   const separator = ticket.indexOf('.');
   // Reject non-canonical base64url before hashing or allocating Buffers. In
   // particular, JS string length is not byte length for Unicode, which would
@@ -65,6 +64,11 @@ function verifyTicket(secret, instanceId, pathname, searchParams, ticket, nonce,
   if (!crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) return null;
   let payload;
   try { payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')); } catch { return null; }
+  return payload && typeof payload.j === 'string' ? payload : null;
+}
+
+function verifyAuthenticatedTicket(instanceId, pathname, searchParams, ticket, nonce, payload, options = {}) {
+  if (!payload || typeof nonce !== 'string' || nonce.length === 0 || nonce.length > 128) return null;
   const now = options.now ?? Date.now();
   const requestHash = crypto.createHash('sha256')
     .update(canonicalRequest(pathname, searchParams)).digest('base64url');
@@ -73,6 +77,11 @@ function verifyTicket(secret, instanceId, pathname, searchParams, ticket, nonce,
       !Number.isFinite(payload.e) || payload.e <= now || typeof payload.j !== 'string' ||
       !meetsDifficulty(ticket, nonce, payload.d)) return null;
   return payload;
+}
+
+function verifyTicket(secret, instanceId, pathname, searchParams, ticket, nonce, options = {}) {
+  return verifyAuthenticatedTicket(instanceId, pathname, searchParams, ticket, nonce,
+    authenticateTicket(secret, ticket), options);
 }
 
 function createTicketStore(lifetimeMs = TICKET_LIFETIME_MS) {
@@ -91,9 +100,10 @@ function createTicketStore(lifetimeMs = TICKET_LIFETIME_MS) {
       fresh.add(id);
       return true;
     },
+    has(id) { return fresh.has(id) || stale.has(id); },
     get size() { return fresh.size + stale.size; },
   };
 }
 
 module.exports = { TICKET_LIFETIME_MS, canonicalRequest, leadingZeroBits, meetsDifficulty,
-  issueTicket, verifyTicket, createTicketStore };
+  issueTicket, authenticateTicket, verifyAuthenticatedTicket, verifyTicket, createTicketStore };
