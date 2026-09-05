@@ -193,7 +193,7 @@ when calling `createServer()`/`start()` programmatically):
 | `POSTER_SECRET` | persisted in `DATA_DIR/.poster-secret` | HMAC key for poster hashes. Unlike `POW_SECRET`, rotating this reassigns every poster identity on the board — it's loaded from disk (or generated once and saved, mode `0600`) rather than regenerated per boot. Set it explicitly if you run more than one instance, so poster hashes agree across them |
 | `CLIENT_IP_HEADER` | `x-forwarded-for` | trusted proxy-written header containing the client source; see above |
 | `CLIENT_IP_HOPS` | `0` | number of trusted proxy hops; `0` ignores forwarding headers and uses the socket peer, while a positive value selects that comma-separated value from the right of the configured header |
-| `MAX_MESSAGE_BYTES` | `2048` | server-side maximum UTF-8 bytes per message (bytes, not characters), not a guarantee that a request will survive percent-encoding or intermediary request-line limits; the poster is responsible for managing request size |
+| `MAX_MESSAGE_BYTES` | `2048` | server-side maximum UTF-8 bytes per decoded message (bytes, not characters). The sender remains responsible for constructing a compliant request; proxy and other intermediary limits are outside the server's concern |
 | `MAX_QUERY_LENGTH` | `200` | max characters in a search query |
 | `RESULT_LIMIT` | `100` | messages returned per `/search` call (not a client-supplied parameter) |
 | `LATEST_LIMIT` | `100` | size of the no-PoW home-page cache |
