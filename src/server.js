@@ -63,7 +63,7 @@ function loadConfig(overrides = {}) {
     // fresh, unpersisted one here.
     posterSecret: overrides.posterSecret || env.POSTER_SECRET || null,
     clientIpHeader: overrides.clientIpHeader ?? env.CLIENT_IP_HEADER ?? 'x-forwarded-for',
-    clientIpHops: num('clientIpHops', num('CLIENT_IP_HOPS', 1)),
+    clientIpHops: num('clientIpHops', num('CLIENT_IP_HOPS', 0)),
     maxMessageBytes: num('maxMessageBytes', num('MAX_MESSAGE_BYTES', 2048)),
     maxQueryLength: num('maxQueryLength', num('MAX_QUERY_LENGTH', 200)),
     resultLimit: num('resultLimit', num('RESULT_LIMIT', 100)),
@@ -89,7 +89,7 @@ function loadConfig(overrides = {}) {
   for (const name of integers) if (!Number.isInteger(config[name])) throw new Error(`${name} must be an integer`);
   for (const name of positive) if (config[name] <= 0) throw new Error(`${name} must be positive`);
   for (const name of nonnegative) if (config[name] < 0) throw new Error(`${name} must be nonnegative`);
-  if (config.clientIpHops <= 0) throw new Error('clientIpHops must be positive');
+  if (config.clientIpHops < 0) throw new Error('clientIpHops must be nonnegative');
   if (typeof config.clientIpHeader !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(config.clientIpHeader))
     throw new Error('clientIpHeader must be a valid HTTP header name');
   for (const endpoint of ['search', 'post']) {

@@ -20,7 +20,7 @@ test('loadConfig applies overrides and reads env', () => {
   const defaultDataDir = loadConfig({ env: {} });
   assert.equal(defaultDataDir.dataDir, path.join(process.cwd(), 'data'));
   assert.equal(defaultDataDir.posterSecret, null);
-  assert.equal(defaultDataDir.clientIpHops, 1);
+  assert.equal(defaultDataDir.clientIpHops, 0);
   assert.equal(defaultDataDir.resultLimit, 100);
   assert.equal(defaultDataDir.maxPostsPerSecond, 100);
 
@@ -529,8 +529,8 @@ test('posting is refused once free disk space drops below the configured floor',
   }
 });
 
-test('the configured trusted client-IP header changes the poster source', async () => {
-  const direct = await startTestServer({ clientIpHeader: 'x-real-ip' });
+test('proxy headers are ignored by default and require trusted hops to opt in', async () => {
+  const direct = await startTestServer();
   const proxied = await startTestServer({ clientIpHeader: 'x-forwarded-for', clientIpHops: 1 });
   try {
     const directRes = await powFetch(direct.base, '/post?' + new URLSearchParams({ message: 'direct' }), {
@@ -596,7 +596,7 @@ test('configuration and Accept quality values are validated strictly', () => {
   const { wantsHtml } = require('../src/server');
   for (const overrides of [
     { maxMessageBytes: 0 }, { maxPostsPerSecond: 0 }, { maxDbSizeBytes: -1 },
-    { clientIpHops: 0 }, { clientIpHops: 1.5 },
+    { clientIpHops: -1 }, { clientIpHops: 1.5 },
     { clientIpHeader: 'bad header' }, { baseDifficulty: { search: -1, post: 1 } },
     { maxDifficulty: { search: 257, post: 21 } }, { env: { PORT: 'nope' } },
   ]) assert.throws(() => loadConfig(overrides));
