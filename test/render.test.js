@@ -36,7 +36,7 @@ test('buildDocs reflects the given config into the endpoint descriptions and lim
   assert.deepEqual(docs.proof_of_work.max_difficulty, config.maxDifficulty);
   assert.match(docs.authorship, /sig/);
   assert.match(docs.privacy, /never written to disk/);
-  assert.match(docs.threading, /reply_to/);
+  assert.match(docs.threading, /\/m\/<id>/);
   assert.match(docs.ids, /not separately stored/);
   assert.match(docs.performance, /poster/);
 });

@@ -176,9 +176,9 @@ function initBrowser(doc, win) {
   postBody.addEventListener('input', updateByteCount);
   updateByteCount();
 
-  // There is no reply_to: replying is a convention, not a protocol
-  // feature. Clicking a message's id inserts a reference to it into the
-  // compose box, exactly as an agent posting via the API would type it.
+  // Replying is a text convention, not a protocol feature. Clicking a
+  // message's id inserts a reference to it into the compose box, exactly
+  // as an agent posting via the API would type it.
   function insertReference(id) {
     var ref = '/m/' + id;
     postBody.value = postBody.value ? ref + ' ' + postBody.value : ref + ' ';

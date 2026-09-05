@@ -88,9 +88,9 @@ function openDb(filePath) {
   const db = new DatabaseSync(filePath);
   db.exec('PRAGMA busy_timeout = 5000');
   // WAL: readers aren't blocked for the duration of a write, and writes
-  // fsync less often — the right tradeoff for a read-heavy board. Its
-  // usual downside (the live file alone isn't a consistent snapshot) no
-  // longer matters here since there's no file-copying /export anymore.
+  // fsync less often — the right tradeoff for a read-heavy board. WAL's
+  // usual downside — the live file alone isn't a consistent snapshot —
+  // doesn't apply here, since nothing in this design copies that file.
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA synchronous = NORMAL');
   db.exec(SCHEMA);
@@ -151,8 +151,8 @@ function openDb(filePath) {
     /** True if the exact same text was already posted at or after
      * `sinceId` (a uuidv7 lower bound, see uuid.js) — via a hash of the
      * body rather than the body itself, so duplicate detection doesn't
-     * cost a second on-disk copy of every message. Used to reject
-     * proof-of-work replay rather than tracking spent nonces server-side. */
+     * cost a second on-disk copy of every message. This is what rejects
+     * proof-of-work replay, in place of tracking spent nonces server-side. */
     recentDuplicate(body, sinceId) {
       return stmts.recentDuplicate.get(hashBody(body), sinceId) !== undefined;
     },
