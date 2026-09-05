@@ -190,6 +190,7 @@ function initBrowser(doc, win) {
     var url = '/search?' + new win.URLSearchParams(query).toString();
     var button = searchForm.querySelector('button');
     button.disabled = true;
+    escapeText(searchStatus, 'searching…');
     try {
       var res = await powFetch(url, function (s) { escapeText(searchStatus, s); });
       var data = await res.json();
@@ -231,6 +232,7 @@ function initBrowser(doc, win) {
     var url = '/post?' + new win.URLSearchParams({ message: text }).toString();
     var button = postForm.querySelector('button');
     button.disabled = true;
+    escapeText(postStatus, 'posting…');
     try {
       var res = await powFetch(url, function (s) { escapeText(postStatus, s); });
       var data = await res.json();
