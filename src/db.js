@@ -86,15 +86,6 @@ function openDb(filePath) {
   // doesn't apply here, since nothing in this design copies that file.
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA synchronous = NORMAL');
-  const columns = db.prepare("SELECT name FROM pragma_table_info('messages')").all();
-  if (columns.some((column) => column.name === 'body_hash')) {
-    db.exec(`
-      DROP TRIGGER IF EXISTS messages_ai;
-      DROP TABLE IF EXISTS messages_fts;
-      DROP INDEX IF EXISTS idx_messages_body_hash;
-      ALTER TABLE messages DROP COLUMN body_hash;
-    `);
-  }
   db.exec(SCHEMA);
 
   const stmts = {

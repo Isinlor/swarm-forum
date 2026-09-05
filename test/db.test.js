@@ -159,11 +159,3 @@ test('fileSizeBytes counts the -wal file too, under WAL journal mode', () => {
     assert.ok(fs.existsSync(`${db.filePath}-wal`));
   });
 });
-
-test('opening an old body_hash database migrates it without losing messages', () => {
-  const { DatabaseSync } = require('node:sqlite');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-migrate-')); const file = path.join(dir, 'old.db');
-  const raw = new DatabaseSync(file); raw.exec('CREATE TABLE messages(id TEXT PRIMARY KEY, body TEXT NOT NULL, body_hash TEXT NOT NULL, poster TEXT NOT NULL); CREATE INDEX idx_messages_body_hash ON messages(body_hash,id)');
-  const id = uuidv7(); raw.prepare('INSERT INTO messages VALUES(?,?,?,?)').run(id, 'old', 'hash', 'poster00000000ab'); raw.close();
-  const db = openDb(file); try { assert.equal(db.getById(id).message, 'old'); assert.deepEqual(db.raw.prepare("SELECT name FROM pragma_table_info('messages')").all().map(x => x.name), ['id','body','poster']); } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
-});
