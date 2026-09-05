@@ -23,10 +23,14 @@ test('loadConfig applies overrides and reads env', () => {
   assert.equal(defaultDataDir.clientIpHops, 0);
   assert.equal(defaultDataDir.resultLimit, 100);
   assert.equal(defaultDataDir.maxPostsPerSecond, 100);
+  assert.equal(defaultDataDir.minFreeBytes, 100 * 1024 * 1024);
+  assert.equal(defaultDataDir.powWindowSeconds, 300);
+  assert.equal(defaultDataDir.maxDbSizeBytes, undefined);
 
   const defaultBaseDifficulty = loadConfig({ env: {} });
   assert.equal(defaultBaseDifficulty.baseDifficulty.post, 17);
-  assert.equal(defaultBaseDifficulty.maxDifficulty.post, 21);
+  assert.equal(defaultBaseDifficulty.maxDifficulty.search, 21);
+  assert.equal(defaultBaseDifficulty.maxDifficulty.post, 23);
 
   const envOverrides = loadConfig({ env: {
     BASE_DIFFICULTY_POST: '30',
@@ -36,6 +40,7 @@ test('loadConfig applies overrides and reads env', () => {
     POSTER_SECRET: 'from-env',
     RESULT_LIMIT: '50',
     MAX_POSTS_PER_SECOND: '25',
+    POW_WINDOW_SECONDS: '600',
   } });
   assert.equal(envOverrides.baseDifficulty.post, 30);
   assert.equal(envOverrides.maxDifficulty.post, 40);
@@ -44,6 +49,7 @@ test('loadConfig applies overrides and reads env', () => {
   assert.equal(envOverrides.posterSecret, 'from-env');
   assert.equal(envOverrides.resultLimit, 50);
   assert.equal(envOverrides.maxPostsPerSecond, 25);
+  assert.equal(envOverrides.powWindowSeconds, 600);
 
   const overrideBaseDifficulty = loadConfig({ baseDifficulty: { search: 1, post: 2 }, maxDifficulty: { search: 10, post: 20 } });
   assert.deepEqual(overrideBaseDifficulty.baseDifficulty, { search: 1, post: 2 });
@@ -230,6 +236,7 @@ test('POST /post without proof-of-work is challenged with 402, before any valida
     assert.equal(body.error, 'proof_of_work_required');
     assert.equal(typeof body.ticket, 'string');
     assert.equal(typeof body.difficulty, 'number');
+    assert.equal(body.expires_in, 300);
 
     // Even a request with no `message` at all is gated first: nothing
     // about the request's validity is inspected before payment.
@@ -504,18 +511,6 @@ test('a path merely resembling /m/<id> without a valid id falls through to 404',
   }
 });
 
-test('posting is refused once the board is over its configured capacity, without needing proof-of-work', async () => {
-  const ctx = await startTestServer({ maxDbSizeBytes: 1 }); // any real db exceeds 1 byte
-  try {
-    const res = await fetch(ctx.base + '/post?message=hi');
-    assert.equal(res.status, 507);
-    const body = await res.json();
-    assert.equal(body.error, 'insufficient_storage');
-  } finally {
-    await ctx.close();
-  }
-});
-
 test('posting is refused once free disk space drops below the configured floor', async () => {
   // A MIN_FREE_BYTES far above real free disk space simulates "the disk
   // is nearly full" without actually filling it — proving the ceiling
@@ -595,7 +590,7 @@ test('an unexpected internal error is reported as 500 rather than crashing the s
 test('configuration and Accept quality values are validated strictly', () => {
   const { wantsHtml } = require('../src/server');
   for (const overrides of [
-    { maxMessageBytes: 0 }, { maxPostsPerSecond: 0 }, { maxDbSizeBytes: -1 },
+    { maxMessageBytes: 0 }, { maxPostsPerSecond: 0 }, { minFreeBytes: -1 },
     { clientIpHops: -1 }, { clientIpHops: 1.5 },
     { clientIpHeader: 'bad header' }, { baseDifficulty: { search: -1, post: 1 } },
     { maxDifficulty: { search: 257, post: 21 } }, { env: { PORT: 'nope' } },
@@ -657,7 +652,7 @@ test('post rechecks capacity after payment and post tickets cannot be replayed',
 
     const next = await fetch(ctx.base + '/post?message=full'); const nextBody = await next.json();
     const nextNonce = solvePow(nextBody.ticket, nextBody.difficulty);
-    ctx.server.swarmForum.config.maxDbSizeBytes = 1;
+    ctx.server.swarmForum.config.minFreeBytes = Number.MAX_SAFE_INTEGER;
     const full = await fetch(`${ctx.base}/post?message=full&ticket=${encodeURIComponent(nextBody.ticket)}&pow=${nextNonce}`);
     assert.equal(full.status, 507);
   } finally { await ctx.close(); }
@@ -666,11 +661,13 @@ test('post rechecks capacity after payment and post tickets cannot be replayed',
 test('a paid post fails closed when its final capacity measurement fails', async () => {
   const ctx = await startTestServer();
   try {
-    const original = ctx.server.swarmForum.db.fileSizeBytes;
-    let calls = 0; ctx.server.swarmForum.db.fileSizeBytes = () => { calls += 1; if (calls > 1) throw new Error('stat failed'); return original(); };
     // Prime the memoized approximate state, then make only the mandatory final reading fail.
     ctx.server.swarmForum.computeState();
-    const res = await powFetch(ctx.base, '/post?message=capacity-check');
+    const challenge = await fetch(ctx.base + '/post?message=capacity-check');
+    const body = await challenge.json();
+    const nonce = solvePow(body.ticket, body.difficulty);
+    ctx.server.swarmForum.config.dataDir = '/path/does/not/exist/at/all';
+    const res = await fetch(`${ctx.base}/post?message=capacity-check&ticket=${encodeURIComponent(body.ticket)}&pow=${nonce}`);
     assert.equal(res.status, 507); assert.equal((await res.json()).error, 'insufficient_storage');
   } finally { await ctx.close(); }
 });

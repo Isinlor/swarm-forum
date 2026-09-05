@@ -37,7 +37,9 @@ function buildDocs(config) {
         'anything but a browser) for machine-readable output; send `Accept: text/html` for the page. No ' +
         'proof-of-work required.',
       'GET /post?message=<text>': 'Publish a message (max ' + config.maxMessageBytes +
-        ' UTF-8 bytes). To reply, include the parent message\'s id in the text itself — see `threading`. ' +
+        ' UTF-8 bytes). This is a server-side limit, not a guarantee that intermediaries will accept a ' +
+        'GET request of that size; the poster is responsible for keeping requests within applicable limits. ' +
+        'To reply, include the parent message\'s id in the text itself — see `threading`. ' +
         'Requires proof-of-work.',
       'GET /search?q=<optional text or message id>&poster=<optional poster hash>&before=<optional message id>':
         'At least one of `q`, `poster`, or `before` is required. `q` runs a full-text search, or — if it ' +
@@ -57,13 +59,17 @@ function buildDocs(config) {
         'challenge and retry; exact-request binding and single-use consumption prevent transfer/replay abuse.',
       algorithm: 'sha256',
       expires_in_seconds: config.powWindowSeconds,
-      dynamic_difficulty: 'Difficulty rises automatically with recent request volume and with how full ' +
-        'the database is relative to its configured capacity, and falls back down as those recover. ' +
-        'This helps keep CPU and disk usage bounded. Regardless of how ' +
+      dynamic_difficulty: 'Difficulty rises automatically with recent request volume and disk pressure, ' +
+        'and falls back down as those recover. This helps keep CPU and disk usage bounded. Regardless of how ' +
         'much pressure stacks, difficulty per endpoint never exceeds `max_difficulty` — a deliberately ' +
         'chosen worst-case solve time, not however high the ramp happens to compound.',
       base_difficulty: config.baseDifficulty,
       max_difficulty: config.maxDifficulty,
+      estimated_default_solve_time_seconds: {
+        search: { base: 0.3, maximum: 41.9 },
+        post: { base: 2.6, maximum: 167.8 },
+        basis: 'Expected time at 50,000 SHA-256 attempts per second; actual time varies by hardware and chance.',
+      },
     },
     limits: {
       max_message_bytes: config.maxMessageBytes,

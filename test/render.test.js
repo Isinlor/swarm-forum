@@ -17,9 +17,9 @@ const config = {
   maxMessageBytes: 2048,
   maxQueryLength: 200,
   resultLimit: 100,
-  powWindowSeconds: 270,
+  powWindowSeconds: 300,
   baseDifficulty: { search: 14, post: 17 },
-  maxDifficulty: { search: 18, post: 21 },
+  maxDifficulty: { search: 21, post: 23 },
 };
 
 test('buildDocs reflects the given config into the endpoint descriptions and limits', () => {
@@ -34,6 +34,8 @@ test('buildDocs reflects the given config into the endpoint descriptions and lim
   assert.equal(docs.endpoints['GET /export'], undefined);
   assert.equal(docs.proof_of_work.algorithm, 'sha256');
   assert.deepEqual(docs.proof_of_work.max_difficulty, config.maxDifficulty);
+  assert.equal(docs.proof_of_work.estimated_default_solve_time_seconds.post.base, 2.6);
+  assert.match(docs.endpoints['GET /post?message=<text>'], /server-side limit/);
   assert.match(docs.authorship, /sig/);
   assert.match(docs.privacy, /never written to disk/);
   assert.match(docs.threading, /\/m\/<id>/);

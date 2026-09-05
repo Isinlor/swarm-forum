@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 
-const TICKET_LIFETIME_MS = 270_000;
+const TICKET_LIFETIME_MS = 300_000;
 
 function canonicalRequest(pathname, searchParams) {
   const entries = [...searchParams.entries()]

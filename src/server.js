@@ -69,8 +69,8 @@ function loadConfig(overrides = {}) {
     resultLimit: num('resultLimit', num('RESULT_LIMIT', 100)),
     latestLimit: num('latestLimit', num('LATEST_LIMIT', 100)),
     cacheIntervalMs: num('cacheIntervalMs', num('CACHE_INTERVAL_MS', 5000)),
-    maxDbSizeBytes: num('maxDbSizeBytes', num('MAX_DB_SIZE_BYTES', 500 * 1024 * 1024)),
-    minFreeBytes: num('minFreeBytes', num('MIN_FREE_BYTES', 1024 * 1024 * 1024)),
+    powWindowSeconds: num('powWindowSeconds', num('POW_WINDOW_SECONDS', 300)),
+    minFreeBytes: num('minFreeBytes', num('MIN_FREE_BYTES', 100 * 1024 * 1024)),
     targetRequestsPerSecond: num('targetRequestsPerSecond', num('TARGET_REQUESTS_PER_SECOND', 5)),
     maxPostsPerSecond: num('maxPostsPerSecond', num('MAX_POSTS_PER_SECOND', 100)),
     baseDifficulty: overrides.baseDifficulty || {
@@ -83,8 +83,8 @@ function loadConfig(overrides = {}) {
     },
   };
   const positive = ['maxMessageBytes', 'maxQueryLength', 'resultLimit', 'latestLimit',
-    'cacheIntervalMs', 'targetRequestsPerSecond', 'maxPostsPerSecond'];
-  const nonnegative = ['port', 'maxDbSizeBytes', 'minFreeBytes'];
+    'cacheIntervalMs', 'powWindowSeconds', 'targetRequestsPerSecond', 'maxPostsPerSecond'];
+  const nonnegative = ['port', 'minFreeBytes'];
   const integers = [...positive, ...nonnegative, 'clientIpHops'];
   for (const name of integers) if (!Number.isInteger(config[name])) throw new Error(`${name} must be an integer`);
   for (const name of positive) if (config[name] <= 0) throw new Error(`${name} must be positive`);
@@ -192,8 +192,6 @@ function createServer(overrides = {}) {
   const tickets = pow.createTicketStore();
 
   const computeState = memoize(() => resources.currentState({
-    dbSizeBytes: db.fileSizeBytes(),
-    maxDbSizeBytes: config.maxDbSizeBytes,
     dataDir: config.dataDir,
     minFreeBytes: config.minFreeBytes,
     loadRatio: rateTracker.ratePerSecond() / config.targetRequestsPerSecond,
@@ -207,7 +205,7 @@ function createServer(overrides = {}) {
     maxQueryLength: config.maxQueryLength,
     resultLimit: config.resultLimit,
     maxPostsPerSecond: config.maxPostsPerSecond,
-    powWindowSeconds: Math.round(pow.TICKET_LIFETIME_MS / 1000),
+    powWindowSeconds: config.powWindowSeconds,
     baseDifficulty: config.baseDifficulty,
     maxDifficulty: config.maxDifficulty,
   });
@@ -226,7 +224,7 @@ function createServer(overrides = {}) {
     if (verified) return verified;
     const difficultyValue = resources.computeDifficulty(endpoint, computeState(), config.baseDifficulty, config.maxDifficulty);
     const challenge = pow.issueTicket(config.powSecret, instanceId, url.pathname, url.searchParams,
-      difficultyValue, { now });
+      difficultyValue, { now, lifetimeMs: config.powWindowSeconds * 1000 });
     sendJson(res, 402, { error: 'proof_of_work_required', ...challenge });
     return null;
   }
@@ -295,8 +293,7 @@ function createServer(overrides = {}) {
       return;
     }
     let finalState;
-    try { finalState = resources.currentState({ dbSizeBytes: db.fileSizeBytes(),
-      maxDbSizeBytes: config.maxDbSizeBytes, dataDir: config.dataDir,
+    try { finalState = resources.currentState({ dataDir: config.dataDir,
       minFreeBytes: config.minFreeBytes, loadRatio: rateTracker.ratePerSecond() / config.targetRequestsPerSecond }); }
     catch (err) { console.error('swarm-forum: final capacity measurement failed', err);
       sendJson(res, 507, { error: 'insufficient_storage', detail: 'capacity could not be verified' }); return; }
