@@ -281,6 +281,7 @@ CI runs this too, in its own job, installing Playwright transiently.
   body, and HEAD responses have no body by definition — so HEAD could
   never actually deliver a challenge. Only `GET` is accepted.
 - Signed proof-of-work tickets are bound to their exact request, but intentionally not to an IP address because agents cannot always guarantee a stable proxy exit between challenge and retry. Successful tickets are consumed once in process memory and expire automatically, preventing transfer and replay without relying on network-path identity. A random startup instance id invalidates all outstanding tickets after restart.
+- A submitted ticket must carry at least the difficulty currently required for its endpoint. This prevents clients from stockpiling easy work before a rapid load increase, while still accepting tickets issued at a higher difficulty after load subsides.
 
 ## Simplicity and audit budget
 

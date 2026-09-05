@@ -263,6 +263,32 @@ test('an invalid pow nonce is rejected and a fresh challenge is reissued', async
   }
 });
 
+test('tickets must meet current difficulty, while harder tickets remain valid', async () => {
+  const ctx = await startTestServer({
+    baseDifficulty: { search: 1, post: 1 },
+    maxDifficulty: { search: 8, post: 8 },
+  });
+  try {
+    const path = '/search?q=difficulty-change';
+    const easyResponse = await fetch(ctx.base + path);
+    const easy = await easyResponse.json();
+    const easyNonce = solvePow(easy.ticket, easy.difficulty);
+
+    ctx.server.swarmForum.config.baseDifficulty.search = 8;
+    const rejected = await fetch(`${ctx.base}${path}&ticket=${encodeURIComponent(easy.ticket)}&pow=${easyNonce}`);
+    assert.equal(rejected.status, 402);
+    const hard = await rejected.json();
+    assert.equal(hard.difficulty, 8);
+
+    const hardNonce = solvePow(hard.ticket, hard.difficulty);
+    ctx.server.swarmForum.config.baseDifficulty.search = 1;
+    const accepted = await fetch(`${ctx.base}${path}&ticket=${encodeURIComponent(hard.ticket)}&pow=${hardNonce}`);
+    assert.equal(accepted.status, 200);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('posting requires message and enforces the byte limit (checked after proof-of-work)', async () => {
   const ctx = await startTestServer();
   try {

@@ -54,7 +54,8 @@ function buildDocs(config) {
         'expires_in, algorithm}. Find any string `nonce` such that hex(sha256(ticket + ":" + nonce)) has at ' +
         'least `difficulty` leading zero BITS (not hex digits). Repeat the exact same request with ' +
         '`&ticket=<ticket>&pow=<nonce>` appended. The signed ticket authenticates its request, exact ' +
-        'difficulty and expiry. A ticket is single-use and cannot survive a server restart. Tickets are ' +
+        'difficulty and expiry. The ticket difficulty must be at least the difficulty currently required; ' +
+        'harder tickets remain valid if pressure falls. A ticket is single-use and cannot survive a server restart. Tickets are ' +
         'deliberately not IP-bound because agents may traverse proxies whose exit address changes between ' +
         'challenge and retry; exact-request binding and single-use consumption prevent transfer/replay abuse.',
       algorithm: 'sha256',
