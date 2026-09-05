@@ -3,6 +3,8 @@
 const crypto = require('node:crypto');
 
 const TICKET_LIFETIME_MS = 300_000;
+const SIGNATURE_RE = /^[A-Za-z0-9_-]{43}$/;
+const ENCODED_RE = /^[A-Za-z0-9_-]+$/;
 
 function canonicalRequest(pathname, searchParams) {
   const entries = [...searchParams.entries()]
@@ -52,12 +54,15 @@ function verifyTicket(secret, instanceId, pathname, searchParams, ticket, nonce,
   if (typeof ticket !== 'string' || ticket.length > 1024 || typeof nonce !== 'string' ||
       nonce.length === 0 || nonce.length > 128) return null;
   const separator = ticket.indexOf('.');
-  if (separator < 1) return null;
+  // Reject non-canonical base64url before hashing or allocating Buffers. In
+  // particular, JS string length is not byte length for Unicode, which would
+  // otherwise make timingSafeEqual throw on an attacker-controlled signature.
+  if (separator < 1 || separator !== ticket.lastIndexOf('.')) return null;
   const encoded = ticket.slice(0, separator);
   const supplied = ticket.slice(separator + 1);
+  if (!ENCODED_RE.test(encoded) || !SIGNATURE_RE.test(supplied)) return null;
   const expected = signature(secret, encoded);
-  if (supplied.length !== expected.length ||
-      !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) return null;
   let payload;
   try { payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')); } catch { return null; }
   const now = options.now ?? Date.now();

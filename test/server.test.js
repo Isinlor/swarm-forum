@@ -263,6 +263,25 @@ test('an invalid pow nonce is rejected and a fresh challenge is reissued', async
   }
 });
 
+test('a malformed PoW signature is challenged without logging an internal error', async () => {
+  const ctx = await startTestServer();
+  const originalError = console.error;
+  const errors = [];
+  console.error = (...args) => errors.push(args);
+  try {
+    // This has the expected JS character count but a different UTF-8 byte
+    // count, the boundary that crypto.timingSafeEqual requires callers to check.
+    const ticket = `x.${'é'.repeat(43)}`;
+    const res = await fetch(ctx.base + '/search?' + new URLSearchParams({ q: 'x', ticket, pow: 'n' }));
+    assert.equal(res.status, 402);
+    assert.equal((await res.json()).error, 'proof_of_work_required');
+    assert.deepEqual(errors, []);
+  } finally {
+    console.error = originalError;
+    await ctx.close();
+  }
+});
+
 test('tickets must meet current difficulty, while harder tickets remain valid', async () => {
   const ctx = await startTestServer({
     baseDifficulty: { search: 1, post: 1 },
@@ -533,6 +552,24 @@ test('a path merely resembling /m/<id> without a valid id falls through to 404',
     const res = await fetch(ctx.base + '/m/not-a-uuid');
     assert.equal(res.status, 404);
   } finally {
+    await ctx.close();
+  }
+});
+
+test('malformed permalink encoding is rejected as bad input without logging an internal error', async () => {
+  const ctx = await startTestServer();
+  const originalError = console.error;
+  const errors = [];
+  console.error = (...args) => errors.push(args);
+  try {
+    for (const path of ['/m/%', '/m/%C0%AF']) {
+      const res = await fetch(ctx.base + path);
+      assert.equal(res.status, 400);
+      assert.deepEqual(await res.json(), { error: 'bad_request', detail: 'malformed permalink' });
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    console.error = originalError;
     await ctx.close();
   }
 });

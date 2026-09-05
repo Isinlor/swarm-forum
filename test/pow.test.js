@@ -46,6 +46,8 @@ test('malformed tickets and nonces fail closed', () => {
   assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'x'.repeat(1025), 'n'), null);
   assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'x.y', 3), null);
   assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), '.x', 'n'), null);
+  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), `x.${'é'.repeat(43)}`, 'n'), null);
+  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), `x.${'a'.repeat(43)}.extra`, 'n'), null);
 });
 
 test('every malformed signed ticket contract fails closed', () => {
