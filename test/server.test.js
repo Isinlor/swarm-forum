@@ -22,6 +22,7 @@ test('loadConfig applies overrides and reads env', () => {
   assert.equal(defaultDataDir.posterSecret, null);
   assert.equal(defaultDataDir.clientIpHops, 1);
   assert.equal(defaultDataDir.resultLimit, 100);
+  assert.equal(defaultDataDir.maxPostsPerSecond, 100);
 
   const defaultBaseDifficulty = loadConfig({ env: {} });
   assert.equal(defaultBaseDifficulty.baseDifficulty.post, 17);
@@ -34,6 +35,7 @@ test('loadConfig applies overrides and reads env', () => {
     CLIENT_IP_HOPS: '2',
     POSTER_SECRET: 'from-env',
     RESULT_LIMIT: '50',
+    MAX_POSTS_PER_SECOND: '25',
   } });
   assert.equal(envOverrides.baseDifficulty.post, 30);
   assert.equal(envOverrides.maxDifficulty.post, 40);
@@ -41,6 +43,7 @@ test('loadConfig applies overrides and reads env', () => {
   assert.equal(envOverrides.clientIpHeader, 'x-real-ip');
   assert.equal(envOverrides.posterSecret, 'from-env');
   assert.equal(envOverrides.resultLimit, 50);
+  assert.equal(envOverrides.maxPostsPerSecond, 25);
 
   const overrideBaseDifficulty = loadConfig({ baseDifficulty: { search: 1, post: 2 }, maxDifficulty: { search: 10, post: 20 } });
   assert.deepEqual(overrideBaseDifficulty.baseDifficulty, { search: 1, post: 2 });
@@ -115,6 +118,7 @@ test('GET / defaults to JSON (agents), and serves HTML only when explicitly requ
     assert.deepEqual(data.latest_messages, []);
     assert.equal(typeof data.proof_of_work.base_difficulty.post, 'number');
     assert.equal(typeof data.proof_of_work.max_difficulty.post, 'number');
+    assert.equal(data.limits.max_posts_per_second, 100);
 
     const html = await fetch(ctx.base + '/', { headers: { Accept: 'text/html' } });
     assert.equal(html.status, 200);
@@ -591,7 +595,8 @@ test('an unexpected internal error is reported as 500 rather than crashing the s
 test('configuration and Accept quality values are validated strictly', () => {
   const { wantsHtml } = require('../src/server');
   for (const overrides of [
-    { maxMessageBytes: 0 }, { maxDbSizeBytes: -1 }, { clientIpHops: 0 }, { clientIpHops: 1.5 },
+    { maxMessageBytes: 0 }, { maxPostsPerSecond: 0 }, { maxDbSizeBytes: -1 },
+    { clientIpHops: 0 }, { clientIpHops: 1.5 },
     { clientIpHeader: 'bad header' }, { baseDifficulty: { search: -1, post: 1 } },
     { maxDifficulty: { search: 257, post: 21 } }, { env: { PORT: 'nope' } },
   ]) assert.throws(() => loadConfig(overrides));
@@ -611,6 +616,33 @@ test('a successful ticket is single-use', async () => {
     assert.equal((await fetch(paid)).status, 200);
     const replay = await fetch(paid); assert.equal(replay.status, 409);
     assert.equal((await replay.json()).error, 'ticket_already_used');
+  } finally { await ctx.close(); }
+});
+
+test('posting has a hard per-second ceiling even with valid proof-of-work', async () => {
+  const ctx = await startTestServer({
+    maxPostsPerSecond: 1,
+    baseDifficulty: { search: 0, post: 0 },
+  });
+  try {
+    const paidUrl = async (message) => {
+      const path = '/post?' + new URLSearchParams({ message });
+      const challenge = await fetch(ctx.base + path);
+      const body = await challenge.json();
+      const url = new URL(ctx.base + path);
+      url.searchParams.set('ticket', body.ticket);
+      url.searchParams.set('pow', solvePow(body.ticket, body.difficulty));
+      return url;
+    };
+    const firstUrl = await paidUrl('within cap');
+    const secondUrl = await paidUrl('over cap');
+    while (Date.now() % 1000 > 100) await new Promise((resolve) => setTimeout(resolve, 10));
+    const first = await fetch(firstUrl);
+    const second = await fetch(secondUrl);
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 429);
+    assert.equal(second.headers.get('retry-after'), '1');
+    assert.equal((await second.json()).error, 'rate_limit_exceeded');
   } finally { await ctx.close(); }
 });
 

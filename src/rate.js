@@ -19,4 +19,22 @@ function createRequestRateTracker() {
   };
 }
 
-module.exports = { createRequestRateTracker };
+function createPerSecondLimiter(limit) {
+  const acceptedAt = new Float64Array(limit);
+  let first = 0;
+  let count = 0;
+  return {
+    take(now = Date.now()) {
+      while (count > 0 && acceptedAt[first] <= now - 1000) {
+        first = (first + 1) % limit;
+        count -= 1;
+      }
+      if (count >= limit) return false;
+      acceptedAt[(first + count) % limit] = now;
+      count += 1;
+      return true;
+    },
+  };
+}
+
+module.exports = { createRequestRateTracker, createPerSecondLimiter };

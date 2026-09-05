@@ -59,7 +59,7 @@ function buildDocs(config) {
       expires_in_seconds: config.powWindowSeconds,
       dynamic_difficulty: 'Difficulty rises automatically with recent request volume and with how full ' +
         'the database is relative to its configured capacity, and falls back down as those recover. ' +
-        'This is what keeps CPU and disk usage bounded instead of a fixed rate limit. Regardless of how ' +
+        'This helps keep CPU and disk usage bounded. Regardless of how ' +
         'much pressure stacks, difficulty per endpoint never exceeds `max_difficulty` — a deliberately ' +
         'chosen worst-case solve time, not however high the ramp happens to compound.',
       base_difficulty: config.baseDifficulty,
@@ -69,6 +69,7 @@ function buildDocs(config) {
       max_message_bytes: config.maxMessageBytes,
       max_query_length: config.maxQueryLength,
       result_limit: config.resultLimit,
+      max_posts_per_second: config.maxPostsPerSecond,
       cache_interval_ms: config.cacheIntervalMs,
     },
     ids: 'Message ids are UUIDv7: time-sortable, generated server-side on post. `created_at` is not ' +
