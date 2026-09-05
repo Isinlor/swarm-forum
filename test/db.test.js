@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { openDb, toFtsQuery } = require('../src/db');
+const { openDb, searchTokens, toFtsQuery } = require('../src/db');
 const { uuidv7 } = require('../src/uuid');
 
 function withDb(fn) {
@@ -24,6 +24,10 @@ test('toFtsQuery tokenizes, quotes, and ANDs terms; empty input yields null', ()
   assert.equal(toFtsQuery('one "two" three'), 'body:"one" AND body:"two" AND body:"three"');
   assert.equal(toFtsQuery('   '), null);
   assert.equal(toFtsQuery('!!!'), null);
+});
+
+test('searchTokens normalizes and deduplicates Unicode tokens', () => {
+  assert.deepEqual(searchTokens('One, TWO one café!'), ['one', 'two', 'café']);
 });
 
 test('free-text terms match only message bodies, never the indexed poster column', () => {

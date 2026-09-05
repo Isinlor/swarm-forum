@@ -45,6 +45,7 @@ protocol. It returns JSON unless `Accept: text/html` is explicitly accepted.
   `Cache-Control: public, max-age=5`; `/post` and `/search` use `no-store`.
   Requests between refreshes read the in-memory snapshot.
 - **Indexed lookups and result-limited search.**
+  Search queries accept at most five unique tokens (enough for a UUID).
   Message id and `poster` lookups hit indexed columns (`poster` sits in a
   composite `(poster, id)` index, so the ORDER BY comes free from the same
   b-tree walk — verified with `EXPLAIN QUERY PLAN` in

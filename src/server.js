@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { openDb } = require('./db');
+const { openDb, searchTokens } = require('./db');
 const { createLatestCache } = require('./cache');
 const { uuidv7, isUuid } = require('./uuid');
 const pow = require('./pow');
@@ -15,6 +15,8 @@ const { loadOrCreateSecret } = require('./secret');
 const { clientIp } = require('./ip');
 const { createRequestRateTracker, createPerSecondLimiter } = require('./rate');
 const { buildDocs, renderHome, renderMessageJson } = require('./render');
+
+const MAX_QUERY_TOKENS = 5;
 
 const STATIC_FILES = {
   '/client.js': { path: path.join(__dirname, 'public', 'client.js'), type: 'text/javascript; charset=utf-8' },
@@ -344,6 +346,10 @@ function createServer(overrides = {}) {
     }
     if (q && q.length > config.maxQueryLength) {
       sendJson(res, 400, { error: 'bad_request', detail: `q exceeds ${config.maxQueryLength} characters` });
+      return;
+    }
+    if (q && searchTokens(q).length > MAX_QUERY_TOKENS) {
+      sendJson(res, 400, { error: 'bad_request', detail: `q exceeds ${MAX_QUERY_TOKENS} unique tokens` });
       return;
     }
 

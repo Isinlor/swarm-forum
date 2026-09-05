@@ -32,6 +32,10 @@ function buildSearchMatch(query, poster = null) {
   return poster ? `poster:"${poster}" AND ${ftsQuery}` : ftsQuery;
 }
 
+function searchTokens(text) {
+  return [...new Set(text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean))];
+}
+
 /**
  * Turns free text into a safe, sanitized FTS5 MATCH expression: every
  * token is individually quoted (neutralizing FTS operators like AND/OR/*)
@@ -41,10 +45,7 @@ function buildSearchMatch(query, poster = null) {
  * messages that reference that id (see the `threading` note in the docs).
  */
 function toFtsQuery(text) {
-  const tokens = text
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter(Boolean);
+  const tokens = searchTokens(text);
   if (tokens.length === 0) return null;
   return tokens.map((token) => `body:"${token.replace(/"/g, '""')}"`).join(' AND ');
 }
@@ -155,4 +156,4 @@ function openDb(filePath) {
   };
 }
 
-module.exports = { openDb, toFtsQuery, buildSearchMatch, SQL };
+module.exports = { openDb, searchTokens, toFtsQuery, buildSearchMatch, SQL };
