@@ -204,6 +204,40 @@ test('non-GET methods are rejected with 405 and an Allow header', async () => {
   }
 });
 
+test('declared request bodies are rejected and incomplete body connections are closed', async () => {
+  const ctx = await startTestServer();
+  try {
+    const port = Number(new URL(ctx.base).port);
+    async function raw(headers) {
+      return new Promise((resolve, reject) => {
+        const sock = net.connect(port, '127.0.0.1', () => {
+          sock.write(`GET / HTTP/1.1\r\nHost: localhost\r\n${headers}\r\n\r\n`);
+        });
+        let data = '';
+        const timeout = setTimeout(() => {
+          sock.destroy();
+          reject(new Error('server left the incomplete request connection open'));
+        }, 1000);
+        sock.on('data', (chunk) => { data += chunk; });
+        sock.on('close', () => { clearTimeout(timeout); resolve(data); });
+        sock.on('error', reject);
+      });
+    }
+
+    for (const headers of ['Content-Length: 1000000000', 'Transfer-Encoding: chunked']) {
+      const response = await raw(headers);
+      assert.match(response, /^HTTP\/1\.1 413/);
+      assert.match(response, /connection: close/i);
+      assert.match(response, /request_body_not_allowed/);
+    }
+
+    const zeroLength = await fetch(ctx.base + '/', { headers: { 'Content-Length': '0' } });
+    assert.equal(zeroLength.status, 200);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('unknown paths return 404, including the removed /export endpoint', async () => {
   const ctx = await startTestServer();
   try {

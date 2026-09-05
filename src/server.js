@@ -370,6 +370,16 @@ function createServer(overrides = {}) {
   }
 
   const server = http.createServer((req, res) => {
+    // Routes never consume request bodies. Refuse framing that declares one
+    // and close the connection so an incomplete body cannot pin a socket (or
+    // delay graceful shutdown) while bypassing the application and its PoW.
+    const contentLength = req.headers['content-length'];
+    if (req.headers['transfer-encoding'] !== undefined ||
+        (contentLength !== undefined && !/^0+$/.test(contentLength))) {
+      sendJson(res, 413, { error: 'request_body_not_allowed', detail: 'request bodies are not accepted' },
+        'no-store', { Connection: 'close' });
+      return;
+    }
     // GET only, deliberately: HEAD would need to carry a 402 challenge
     // body, but clients discard HEAD bodies, so it cannot deliver this
     // protocol's challenge. Keeping the contract to GET
