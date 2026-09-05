@@ -57,7 +57,7 @@ function loadConfig(overrides = {}) {
     dbFile: overrides.dbFile || path.join(dataDir, 'swarm-forum.db'),
     powSecret: overrides.powSecret || env.POW_SECRET || crypto.randomBytes(32).toString('hex'),
     // Unlike powSecret, this has no in-process fallback: it must survive
-    // restarts (rotating it reassigns every poster hash on the board), so
+    // restarts (rotating it changes poster hashes on future posts), so
     // when it isn't explicitly provided, createServer loads or creates a
     // persisted one from disk (see secret.js) rather than generating a
     // fresh, unpersisted one here.
@@ -134,10 +134,7 @@ function sendHtml(res, status, html, cacheControl = 'no-store', extraHeaders = {
   res.end(html);
 }
 
-// Agents are the primary audience, and every HTTP client defaults to
-// `Accept: */*` (or sends nothing) unless told otherwise — only an actual
-// browser sends a literal `text/html`. So JSON is the default; HTML is
-// the special case that has to ask for itself explicitly.
+// JSON is the fallback; an accepted text/html range selects HTML.
 function wantsHtml(req) {
   const ranges = (req.headers.accept || '').split(',').map((part) => {
     const [type, ...params] = part.trim().toLowerCase().split(';');
@@ -227,11 +224,8 @@ function createServer(overrides = {}) {
   const difficulty = resources.createDifficultyController((endpoint) =>
     resources.computeDifficulty(endpoint, computeState(endpoint), config.baseDifficulty, config.maxDifficulty));
 
-  /** Returns true (request may proceed) once a valid proof is present;
-   * otherwise sends a 402 challenge and returns false. This is always
-   * the first real work either handler below does — before any
-   * validation or database access — so an unauthenticated request never
-   * costs the server anything beyond reading its own query string. */
+  /** Verifies payment before request validation or database access.
+   * Posting may perform its cached capacity check first. */
   function gate(req, res, url, endpoint) {
     const now = Date.now();
     const ticket = url.searchParams.get('ticket');
@@ -371,9 +365,8 @@ function createServer(overrides = {}) {
 
   const server = http.createServer((req, res) => {
     // GET only, deliberately: HEAD would need to carry a 402 challenge
-    // body, but HEAD responses have no body by definition (fetch/undici
-    // discard it client-side even if a server writes one), so it can
-    // never actually deliver a challenge. Keeping the contract to GET
+    // body, but clients discard HEAD bodies, so it cannot deliver this
+    // protocol's challenge. Keeping the contract to GET
     // avoids a request type that would silently fail to work.
     if (req.method !== 'GET') {
       res.writeHead(405, { Allow: 'GET', 'Content-Type': 'application/json; charset=utf-8' });

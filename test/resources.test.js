@@ -37,9 +37,7 @@ test('computeDifficulty adds load and disk pressure on top of each endpoint base
   const loaded = { loadRatio: 2, diskPressureRatio: 0.9 };
   assert.ok(resources.computeDifficulty('post', loaded) > resources.BASE_DIFFICULTY.post);
 
-  // The total is bounded by MAX_DIFFICULTY regardless of how many
-  // pressure sources stack — this is what keeps worst-case solve time a
-  // deliberately chosen number rather than whatever the ramp compounds to.
+  // The total stays within MAX_DIFFICULTY when pressure sources stack.
   const maxed = { loadRatio: 5, diskPressureRatio: 2 };
   assert.equal(resources.computeDifficulty('post', maxed), resources.MAX_DIFFICULTY.post);
   assert.equal(resources.computeDifficulty('search', maxed), resources.MAX_DIFFICULTY.search);

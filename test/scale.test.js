@@ -1,11 +1,10 @@
 'use strict';
 
-// Empirically confirms the design's complexity claims: id/poster lookups
+// Checks intended plans and guards timing regressions: id/poster lookups
 // go through indexed b-trees, and free-text search goes through the
 // FTS5 inverted index ordered by rowid (recency) rather than BM25 rank
-// — so cost is bounded by how many results are *returned*, not by how
-// many rows *match*. A term that matches virtually every row should
-// therefore cost about the same as a term that matches exactly one, and
+// — avoiding a relevance sort. A common term should stay near the
+// single-match baseline in this fixture, and
 // no query plan should ever need to materialize-then-sort ("USE TEMP
 // B-TREE FOR ORDER BY") to satisfy an ORDER BY that a composite index
 // already produces for free.
@@ -147,10 +146,8 @@ test('search and lookup cost stay bounded as the table scales to 500k rows', { t
     assert.ok(getGrowth < 15, `getById slowed ${getGrowth}x for a 1000x larger table`);
     assert.ok(searchGrowth < 15, `narrow search slowed ${searchGrowth}x for a 1000x larger table`);
 
-    // Bounded by results returned, not rows matched: a term matching
-    // ~all 500k rows should cost close to a term matching exactly one,
-    // proving the ordering is index-driven rather than "rank everything
-    // that matched, then take the top 20".
+    // Guard the common-term path against a large regression relative to
+    // the single-match baseline in this fixture.
     const commonGrowth = commonMs / Math.max(largeSearchMs, 0.001);
     assert.ok(commonGrowth < 10, `common-term search cost ${commonGrowth}x the single-match search`);
 

@@ -6,10 +6,8 @@ const fs = require('node:fs');
 // under idle conditions, and the highest total difficulty each endpoint
 // can ever reach regardless of how much pressure stacks. Both are
 // calibrated against a deliberately measured, conservative client hash
-// rate (~50,000 sha256/s for the pure-JS worker on a slow device — this
-// project's own implementation measured ~120,000/s in Node on ordinary
-// hardware) so "typical" and "worst case" mean actual seconds, not an
-// accident of how the ramp happens to compound:
+// rate of 50,000 sha256/s; solve times are expected values and actual
+// attempts vary:
 // At the conservative 50,000 hashes/s rate, the default expected times are:
 //   post:   base 17 bits ≈ 2.6s; capped at 23 bits ≈ 167.8s
 //   search: base 14 bits ≈ 0.3s; capped at 21 bits ≈ 41.9s
@@ -52,9 +50,7 @@ function extraBits(ratio, threshold, power, maxBits) {
  * Total difficulty is also clamped per endpoint (`maxDifficulty`), on
  * top of each component already being clamped — belt and suspenders:
  * the per-component clamp bounds any one pressure source, the total
- * clamp bounds what happens when several stack at once, so worst-case
- * solve time is a number that was actually chosen, not whatever the sum
- * of independent ramps happens to produce.
+ * clamp bounds what happens when several stack at once.
  */
 function computeDifficulty(endpoint, state, baseDifficulty = BASE_DIFFICULTY, maxDifficulty = MAX_DIFFICULTY) {
   const base = baseDifficulty[endpoint];

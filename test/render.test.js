@@ -38,7 +38,7 @@ test('buildDocs reflects the given config into the endpoint descriptions and lim
   assert.equal(docs.proof_of_work.estimated_default_solve_time_seconds.post.base, 2.6);
   assert.match(docs.endpoints['GET /post?message=<text>'], /server-side limit/);
   assert.match(docs.authorship, /sig/);
-  assert.match(docs.privacy, /never written to disk/);
+  assert.match(docs.privacy, /stores no posting IP/);
   assert.match(docs.threading, /include its id/);
   assert.match(docs.ids, /not separately stored/);
   assert.match(docs.performance, /poster/);
