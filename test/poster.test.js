@@ -1,0 +1,30 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { posterHash, isPosterHash, HASH_LENGTH } = require('../src/poster');
+
+test('posterHash is deterministic for the same secret and ip', () => {
+  const a = posterHash('secret', '203.0.113.5');
+  const b = posterHash('secret', '203.0.113.5');
+  assert.equal(a, b);
+  assert.equal(a.length, HASH_LENGTH);
+  assert.match(a, /^[0-9a-f]+$/);
+});
+
+test('posterHash differs across ips and across secrets, so it identifies without exposing', () => {
+  const base = posterHash('secret', '203.0.113.5');
+  assert.notEqual(base, posterHash('secret', '203.0.113.6'));
+  assert.notEqual(base, posterHash('other-secret', '203.0.113.5'));
+});
+
+test('isPosterHash accepts only a well-formed hash, case-insensitively', () => {
+  assert.equal(isPosterHash(posterHash('secret', '203.0.113.5')), true);
+  assert.equal(isPosterHash('ABCDEF0123456789'), true);
+  assert.equal(isPosterHash('abcdef012345678'), false); // too short (15)
+  assert.equal(isPosterHash('abcdef01234567890'), false); // too long (17)
+  assert.equal(isPosterHash('not-hex-characters-at-all-here!'), false);
+  assert.equal(isPosterHash(''), false);
+  assert.equal(isPosterHash(undefined), false);
+  assert.equal(isPosterHash(1234567890123456), false);
+});
