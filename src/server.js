@@ -189,7 +189,7 @@ function createServer(overrides = {}) {
   const rateTracker = createRequestRateTracker();
   const postRateLimiter = createPerSecondLimiter(config.maxPostsPerSecond);
   const instanceId = crypto.randomBytes(16).toString('base64url');
-  const tickets = pow.createTicketStore();
+  const tickets = pow.createTicketStore(config.powWindowSeconds * 1000);
 
   const computeState = memoize(() => resources.currentState({
     dataDir: config.dataDir,
@@ -230,7 +230,7 @@ function createServer(overrides = {}) {
   }
 
   function consume(ticket) {
-    if (!tickets.consume(ticket.j, ticket.e)) return false;
+    if (!tickets.consume(ticket.j)) return false;
     rateTracker.record();
     return true;
   }

@@ -29,9 +29,12 @@ test('tickets deliberately remain valid across network-source changes', () => {
   assert.ok(pow.verifyTicket('secret', 'i', '/post', params, issued.ticket, 'n'));
 });
 test('ticket store consumes each id once and prunes expired ids', () => {
-  const store = pow.createTicketStore(); assert.equal(store.consume('a', 20, 10), true);
-  assert.equal(store.consume('a', 20, 10), false); assert.equal(store.size, 1);
-  assert.equal(store.consume('b', 30, 20), true); assert.equal(store.size, 1);
+  const store = pow.createTicketStore(10); assert.equal(store.consume('a', 10), true);
+  assert.equal(store.consume('a', 10), false); assert.equal(store.size, 1);
+  assert.equal(store.consume('b', 20), true); assert.equal(store.size, 2);
+  assert.equal(store.consume('c', 30), true); assert.equal(store.size, 2);
+  assert.equal(store.consume('b', 30), false);
+  assert.equal(store.consume('d', 100), true); assert.equal(store.size, 1);
 });
 test('malformed tickets and nonces fail closed', () => {
   assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'bad', 'n'), null);
