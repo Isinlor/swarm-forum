@@ -166,20 +166,25 @@ function memoize(fn, ttlMs) {
 
 function createServer(overrides = {}) {
   const config = loadConfig(overrides);
-  if (!config.posterSecret) {
-    const secretFile = path.join(config.dataDir, '.poster-secret');
-    const { secret, generated } = loadOrCreateSecret(secretFile);
-    config.posterSecret = secret;
-    if (generated) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `swarm-forum: generated a new poster secret at ${secretFile}. If you run more than one ` +
-        'instance, set POSTER_SECRET to the same value on all of them so poster hashes agree.',
-      );
+  const db = openDb(config.dbFile);
+  try {
+    if (!config.posterSecret) {
+      const secretFile = path.join(config.dataDir, '.poster-secret');
+      const { secret, generated } = loadOrCreateSecret(secretFile, { create: db.walk(1).length === 0 });
+      config.posterSecret = secret;
+      if (generated) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `swarm-forum: generated a new poster secret at ${secretFile}. If you run more than one ` +
+          'instance, set POSTER_SECRET to the same value on all of them so poster hashes agree.',
+        );
+      }
     }
+  } catch (err) {
+    db.close();
+    throw err;
   }
 
-  const db = openDb(config.dbFile);
   const rateTrackers = { search: createRequestRateTracker(), post: createRequestRateTracker() };
   const rateTargets = {
     search: config.targetSearchRequestsPerSecond,
@@ -190,7 +195,7 @@ function createServer(overrides = {}) {
   const tickets = pow.createTicketStore(config.powWindowSeconds * 1000);
 
   const computeDiskState = memoize(() => resources.currentState({
-    dataDir: config.dataDir,
+    dataDir: path.dirname(config.dbFile),
     minFreeBytes: config.minFreeBytes,
     loadRatio: 0,
   }), 1000);
@@ -286,7 +291,7 @@ function createServer(overrides = {}) {
       return;
     }
     let finalState;
-    try { finalState = resources.currentState({ dataDir: config.dataDir,
+    try { finalState = resources.currentState({ dataDir: path.dirname(config.dbFile),
       minFreeBytes: config.minFreeBytes }); }
     catch (err) { console.error('swarm-forum: final capacity measurement failed', err);
       sendJson(res, 507, { error: 'insufficient_storage', detail: 'capacity could not be verified' }); return; }

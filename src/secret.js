@@ -10,7 +10,7 @@ const crypto = require('node:crypto');
  * Used for the poster-hashing secret, which — unlike the proof-of-work
  * secret — it must survive restarts to keep future hashes consistent.
  */
-function loadOrCreateSecret(filePath) {
+function loadOrCreateSecret(filePath, { create = true } = {}) {
   try {
     const existing = fs.readFileSync(filePath, 'utf8').trim();
     if (!existing) throw new Error(`secret file is empty: ${filePath}`);
@@ -18,6 +18,7 @@ function loadOrCreateSecret(filePath) {
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
   }
+  if (!create) throw new Error(`poster secret missing: ${filePath}`);
   const secret = crypto.randomBytes(32).toString('hex');
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const temporary = `${filePath}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;

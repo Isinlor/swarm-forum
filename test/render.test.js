@@ -31,7 +31,10 @@ test('buildDocs reflects the given config into the endpoint descriptions and lim
   assert.ok(docs.endpoints['GET /']);
   assert.ok(docs.endpoints['GET /post?message=<text>']);
   assert.equal(docs.endpoints['GET /m/<id>'], undefined);
-  assert.ok(Object.keys(docs.endpoints).some((k) => k.startsWith('GET /search?q=') && k.includes('poster=') && k.includes('before=')));
+  const searchShape = Object.keys(docs.endpoints).find((k) => k.startsWith('GET /search?q='));
+  assert.match(searchShape, / \| \/search\?poster=.*&before=/);
+  assert.match(docs.endpoints[searchShape], /cannot be combined with `q`/);
+  assert.match(docs.endpoints[searchShape], /no continuation cursor/);
   assert.equal(docs.endpoints['GET /export'], undefined);
   assert.equal(docs.proof_of_work.algorithm, 'sha256');
   assert.deepEqual(docs.proof_of_work.max_difficulty, config.maxDifficulty);

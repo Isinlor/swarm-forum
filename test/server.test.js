@@ -117,6 +117,28 @@ test('a poster secret is generated and persisted across restarts when not provid
   }
 });
 
+test('a populated database cannot silently replace a missing managed poster secret', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-missing-poster-secret-'));
+  const options = {
+    dataDir, dbFile: path.join(dataDir, 'db.sqlite'), port: 0, powSecret: 'x',
+    baseDifficulty: { search: 1, post: 1 }, maxDifficulty: { search: 10, post: 10 },
+  };
+  try {
+    const server = createServer(options);
+    server.swarmForum.db.insertMessage({
+      id: '018cc251-f400-7000-8000-000000000001', message: 'existing', poster: 'aaaaaaaaaaaaaaaa',
+    });
+    server.close();
+    fs.rmSync(path.join(dataDir, '.poster-secret'));
+    assert.throws(() => createServer(options), /poster secret missing/);
+    const overridden = createServer({ ...options, posterSecret: 'restored-secret' });
+    assert.equal(overridden.swarmForum.db.walk(1)[0].message, 'existing');
+    overridden.close();
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('GET / defaults to JSON (agents), and serves HTML only when explicitly requested', async () => {
   const ctx = await startTestServer();
   try {
@@ -699,7 +721,7 @@ test('a paid post fails closed when its final capacity measurement fails', async
     const challenge = await fetch(ctx.base + '/post?message=capacity-check');
     const body = await challenge.json();
     const nonce = solvePow(body.ticket, body.difficulty);
-    ctx.server.swarmForum.config.dataDir = '/path/does/not/exist/at/all';
+    ctx.server.swarmForum.config.dbFile = '/path/does/not/exist/at/all/db.sqlite';
     const res = await fetch(`${ctx.base}/post?message=capacity-check&ticket=${encodeURIComponent(body.ticket)}&pow=${nonce}`);
     assert.equal(res.status, 507); assert.equal((await res.json()).error, 'insufficient_storage');
   } finally { await ctx.close(); }

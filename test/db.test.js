@@ -20,10 +20,19 @@ function withDb(fn) {
 }
 
 test('toFtsQuery tokenizes, quotes, and ANDs terms; empty input yields null', () => {
-  assert.equal(toFtsQuery('Hello, World!'), '"hello" AND "world"');
-  assert.equal(toFtsQuery('one "two" three'), '"one" AND "two" AND "three"');
+  assert.equal(toFtsQuery('Hello, World!'), 'body:"hello" AND body:"world"');
+  assert.equal(toFtsQuery('one "two" three'), 'body:"one" AND body:"two" AND body:"three"');
   assert.equal(toFtsQuery('   '), null);
   assert.equal(toFtsQuery('!!!'), null);
+});
+
+test('free-text terms match only message bodies, never the indexed poster column', () => {
+  withDb((db) => {
+    db.insertMessage({ id: uuidv7(), message: 'ordinary body', poster: 'deadbeefdeadbeef' });
+    assert.deepEqual(db.search('deadbeefdeadbeef'), []);
+    assert.deepEqual(db.search('deadbeefdeadbeef ordinary'), []);
+    assert.equal(db.search('ordinary', 20, 'deadbeefdeadbeef').length, 1);
+  });
 });
 
 test('insertMessage + getById round-trips a message, deriving created_at from the id', () => {

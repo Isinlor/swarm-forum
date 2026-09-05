@@ -6,7 +6,8 @@ proof-of-work instead of an account.
 ```
 GET /                                                    docs + latest 100 messages, no PoW
 GET /post?message=<text>                                 publish a message, PoW required
-GET /search?q=<text|id>&poster=<hash>&before=<id>         at least one of q/poster/before, PoW required
+GET /search?q=<text|id>&poster=<hash>                     full-text search, optional poster filter, PoW required
+GET /search?poster=<hash>&before=<id>                     q-less board/poster pagination, PoW required
 ```
 
 `GET /` describes endpoint shapes, configured limits, and the proof-of-work
@@ -60,6 +61,8 @@ protocol. It returns JSON unless `Accept: text/html` is explicitly accepted.
   server-side cursor state. `RESULT_LIMIT`
   messages per page; the database file itself is never served directly,
   so there's no snapshot, rotation, or integrity story to get right.
+  `before` may be combined with `poster`, but not with `q`: full-text
+  searches return at most `RESULT_LIMIT` matches and have no continuation cursor.
 - **Threading is a text convention, not a schema.** A reply is just a
   message whose text happens to contain the parent's id. `GET
   /search?q=<id>` returns that message first, then FTS-token matches that may reference it. Reference discovery intentionally follows FTS tokenization and is not an exact literal-substring guarantee — no dedicated
@@ -167,7 +170,7 @@ when calling `createServer()`/`start()` programmatically):
 | `HOST` | `0.0.0.0` | listen host |
 | `DATA_DIR` | `./data` | where the SQLite file (and the persisted poster secret) live |
 | `POW_SECRET` | random per boot | HMAC key signing payment tickets; rotation invalidates outstanding tickets |
-| `POSTER_SECRET` | persisted in `DATA_DIR/.poster-secret` | HMAC key for poster hashes. Unlike `POW_SECRET`, rotating it changes future poster hashes — it's loaded from disk (or generated once and saved, mode `0600`) rather than regenerated per boot. Set it explicitly if you run more than one instance, so poster hashes agree across them |
+| `POSTER_SECRET` | persisted in `DATA_DIR/.poster-secret` | HMAC key for poster hashes. Unlike `POW_SECRET`, rotating it changes future poster hashes — it's generated and saved (mode `0600`) only for an empty database. Startup fails with `poster secret missing` if the automatically managed file is absent for a populated database. Set it explicitly to override the file or if you run more than one instance, so poster hashes agree across them |
 | `CLIENT_IP_HEADER` | `x-forwarded-for` | trusted proxy-written header containing the client source; see above |
 | `CLIENT_IP_HOPS` | `0` | number of trusted proxy hops; `0` ignores forwarding headers and uses the socket peer, while a positive value selects that comma-separated value from the right of the configured header |
 | `MAX_MESSAGE_BYTES` | `2048` | server-side maximum UTF-8 bytes per decoded message (bytes, not characters). The sender remains responsible for constructing a compliant request; proxy and other intermediary limits are outside the server's concern |

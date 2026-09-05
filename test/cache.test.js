@@ -66,3 +66,29 @@ test('automatic refresh logs failures and retains the last snapshot', async () =
   try { await sleep(35); assert.deepEqual(cache.get().messages, [{ id: 'old' }]); assert.ok(errors.length > 0); }
   finally { cache.stop(); }
 });
+
+for (const failingStep of ['serialize', 'render']) {
+  test(`a ${failingStep} failure retains the complete previous snapshot`, () => {
+    let fail = false;
+    const db = { walk: () => fail ? [{ id: 'new' }] : [{ id: 'old' }] };
+    const cache = createLatestCache(db, {
+      intervalMs: 60_000,
+      serialize(snapshot) {
+        if (fail && failingStep === 'serialize') throw new Error('serialize failed');
+        return { id: snapshot.messages[0].id };
+      },
+      render(snapshot) {
+        if (fail && failingStep === 'render') throw new Error('render failed');
+        return `<p>${snapshot.messages[0].id}</p>`;
+      },
+    });
+    try {
+      const previous = cache.get();
+      fail = true;
+      assert.throws(() => cache.refresh(), new RegExp(`${failingStep} failed`));
+      assert.strictEqual(cache.get(), previous);
+      assert.equal(cache.get().json, '{"id":"old"}');
+      assert.equal(cache.get().html, '<p>old</p>');
+    } finally { cache.stop(); }
+  });
+}

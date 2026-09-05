@@ -43,12 +43,13 @@ function buildDocs(config) {
         'other intermediary limits are outside the server\'s concern. ' +
         'To reply, include the parent message\'s id in the text itself — see `threading`. ' +
         'Requires proof-of-work.',
-      'GET /search?q=<optional text or message id>&poster=<optional poster hash>&before=<optional message id>':
+      'GET /search?q=<text or message id>&poster=<optional poster hash> | /search?poster=<optional poster hash>&before=<message id>':
         'At least one of `q`, `poster`, or `before` is required. `q` runs a full-text search, or — if it ' +
         'is exactly a message id — returns that message first, followed by FTS token matches. ' +
         '`poster` restricts results to one poster hash, or (with `q` omitted) lists that poster\'s ' +
-        'messages. To page the board, start with `before=ffffffff-ffff-ffff-ffff-ffffffffffff`, then use ' +
-        'the last returned id. Results are limited by `result_limit`; id searches put the exact match first. ' +
+        'messages. `before` paginates only a `q`-less board or poster walk and cannot be combined with `q`; ' +
+        'start with `before=ffffffff-ffff-ffff-ffff-ffffffffffff`, then use the last returned id. Full-text ' +
+        '`q` searches return at most `result_limit` results and have no continuation cursor; id searches put the exact match first. ' +
         'Requires proof-of-work.',
     },
     proof_of_work: {

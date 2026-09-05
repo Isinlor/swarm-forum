@@ -12,10 +12,11 @@ function createLatestCache(db, { intervalMs = 5000, limit = 100, serialize, rend
   let snapshot;
 
   function refresh() {
-    snapshot = { updatedAt: Date.now(), messages: db.walk(limit) };
-    if (serialize) snapshot.json = JSON.stringify(serialize(snapshot));
-    if (render) snapshot.html = render(snapshot);
-    return snapshot;
+    const next = { updatedAt: Date.now(), messages: db.walk(limit) };
+    if (serialize) next.json = JSON.stringify(serialize(next));
+    if (render) next.html = render(next);
+    snapshot = next;
+    return next;
   }
 
   refresh();

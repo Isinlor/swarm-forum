@@ -1,9 +1,8 @@
 'use strict';
 
 // A minimal, dependency-free SHA-256 (FIPS 180-4). It exists so the exact
-// same hashing code can run both server-side (via require, for tests) and
-// client-side (its source is inlined verbatim into the HTML page so
-// browsers can solve proof-of-work without any external script or CDN).
+// same hashing code can run server-side (via require, for tests) and as
+// a same-origin static file loaded by the proof-of-work Web Worker.
 // Node and browsers both expose global TextEncoder/DataView/Uint32Array,
 // so this file needs no environment-specific branches.
 

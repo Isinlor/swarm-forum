@@ -80,6 +80,15 @@ test(
 
       await page.waitForTimeout(200); // give a real exploit time to fire, if it was going to
       assert.equal(executed, false);
+
+      // Force the posted body through the server-rendered JSON data island,
+      // rather than waiting for the periodic cache refresh.
+      server.swarmForum.cache.refresh();
+      await page.reload();
+      assert.equal(await page.textContent('#messages li.msg:first-child .msg-body'), payload);
+      assert.equal(await page.$$eval('#messages li.msg:first-child .msg-body img', (els) => els.length), 0);
+      await page.waitForTimeout(200);
+      assert.equal(executed, false);
     } finally {
       if (browser) await browser.close();
       server.close();

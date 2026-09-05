@@ -35,7 +35,7 @@ function buildSearchMatch(query, poster = null) {
 /**
  * Turns free text into a safe, sanitized FTS5 MATCH expression: every
  * token is individually quoted (neutralizing FTS operators like AND/OR/*)
- * and the tokens are ANDed together, so a search must contain every word,
+ * and the tokens are ANDed together, so a message body must contain every FTS term/stem,
  * in any order. A message id passed as `text` tokenizes into its hyphen-
  * separated hex groups, which is what lets a plain text search surface
  * messages that reference that id (see the `threading` note in the docs).
@@ -46,7 +46,7 @@ function toFtsQuery(text) {
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean);
   if (tokens.length === 0) return null;
-  return tokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(' AND ');
+  return tokens.map((token) => `body:"${token.replace(/"/g, '""')}"`).join(' AND ');
 }
 
 function rowToMessage(row) {
