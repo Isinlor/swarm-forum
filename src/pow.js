@@ -70,16 +70,23 @@ function verifyTicket(secret, instanceId, pathname, searchParams, ticket, nonce,
   return payload;
 }
 
-function createTicketStore() {
-  const consumed = new Map();
+function createTicketStore(lifetimeMs = TICKET_LIFETIME_MS) {
+  let fresh = new Set();
+  let stale = new Set();
+  let rotateAt = 0;
   return {
-    consume(id, expiresAt, now = Date.now()) {
-      for (const [key, expiry] of consumed) if (expiry <= now) consumed.delete(key);
-      if (consumed.has(id)) return false;
-      consumed.set(id, expiresAt);
+    consume(id, now = Date.now()) {
+      if (!rotateAt) rotateAt = now + lifetimeMs;
+      if (now >= rotateAt) {
+        stale = now >= rotateAt + lifetimeMs ? new Set() : fresh;
+        fresh = new Set();
+        rotateAt = now + lifetimeMs;
+      }
+      if (fresh.has(id) || stale.has(id)) return false;
+      fresh.add(id);
       return true;
     },
-    get size() { return consumed.size; },
+    get size() { return fresh.size + stale.size; },
   };
 }
 
