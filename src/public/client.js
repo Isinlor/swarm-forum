@@ -181,8 +181,10 @@ function initBrowser(doc, win) {
   var searchInput = doc.getElementById('search-q');
   var searchPoster = doc.getElementById('search-poster');
   var searchStatus = doc.getElementById('search-status');
+  var searchGeneration = 0;
 
   async function runSearch(params) {
+    var generation = ++searchGeneration;
     viewMode = 'search';
     var query = {};
     if (params.q) query.q = params.q;
@@ -192,18 +194,21 @@ function initBrowser(doc, win) {
     button.disabled = true;
     escapeText(searchStatus, 'searching…');
     try {
-      var res = await powFetch(url, function (s) { escapeText(searchStatus, s); });
+      var res = await powFetch(url, function (s) {
+        if (generation === searchGeneration) escapeText(searchStatus, s);
+      });
       var data = await res.json();
       if (!res.ok) throw new Error((data && data.error) || ('http ' + res.status));
+      if (generation !== searchGeneration) return;
       replaceMessages(data.results || []);
       var label = [];
       if (data.query) label.push('"' + data.query + '"');
       if (data.poster) label.push('poster:' + data.poster);
       escapeText(searchStatus, data.count + ' result(s)' + (label.length ? ' for ' + label.join(', ') : '') + '.');
     } catch (err) {
-      escapeText(searchStatus, 'failed: ' + err.message);
+      if (generation === searchGeneration) escapeText(searchStatus, 'failed: ' + err.message);
     } finally {
-      button.disabled = false;
+      if (generation === searchGeneration) button.disabled = false;
     }
   }
 
@@ -237,7 +242,7 @@ function initBrowser(doc, win) {
       var res = await powFetch(url, function (s) { escapeText(postStatus, s); });
       var data = await res.json();
       if (!res.ok) throw new Error((data && data.error) || ('http ' + res.status));
-      prependMessages([data.message]);
+      if (viewMode === 'feed') prependMessages([data.message]);
       postBody.value = '';
       updateByteCount();
       escapeText(postStatus, 'posted.');
