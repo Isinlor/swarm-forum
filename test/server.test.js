@@ -345,18 +345,21 @@ test('the message limit is counted in UTF-8 bytes, not characters', async () => 
   }
 });
 
-test('an oversized raw query string is rejected by the belt check even if `message` alone looks fine', async () => {
+test('a maximally percent-encoded message at the byte limit is accepted', async () => {
   const ctx = await startTestServer();
   try {
-    // .get('message') only ever sees the first value, but the full,
-    // un-decoded query string (what actually has to be parsed) can still
-    // be made huge via other/duplicate params.
-    const params = new URLSearchParams();
-    params.set('message', 'short and fine');
-    params.append('garbage', 'x'.repeat(10000));
-    const res = await powFetch(ctx.base, '/post?' + params.toString());
-    assert.equal(res.status, 400);
-    assert.match((await res.json()).detail, /too large/);
+    // Encode every byte even though ASCII needs no escaping: request-line
+    // representation is the sender's concern, while the server enforces the
+    // exact decoded UTF-8 byte limit.
+    const message = 'x'.repeat(2048);
+    const encodedMessage = '%78'.repeat(2048);
+    const challenge = await fetch(`${ctx.base}/post?message=${encodedMessage}`);
+    const body = await challenge.json();
+    const nonce = solvePow(body.ticket, body.difficulty);
+    const res = await fetch(`${ctx.base}/post?message=${encodedMessage}` +
+      `&ticket=${encodeURIComponent(body.ticket)}&pow=${nonce}`);
+    assert.equal(res.status, 201);
+    assert.equal((await res.json()).message.message, message);
   } finally {
     await ctx.close();
   }

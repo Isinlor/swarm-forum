@@ -302,13 +302,6 @@ function createServer(overrides = {}) {
       sendJson(res, 400, { error: 'bad_request', detail: 'message is required' });
       return;
     }
-    // Belt check ahead of the precise byte count: an encoded query string
-    // wildly out of proportion to the byte budget it could legitimately
-    // encode isn't worth decoding further.
-    if (url.search.length > config.maxMessageBytes * 3 + 64) {
-      sendJson(res, 400, { error: 'bad_request', detail: 'request too large' });
-      return;
-    }
     if (Buffer.byteLength(message, 'utf8') > config.maxMessageBytes) {
       sendJson(res, 400, { error: 'bad_request', detail: `message exceeds ${config.maxMessageBytes} bytes` });
       return;

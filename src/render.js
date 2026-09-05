@@ -37,8 +37,9 @@ function buildDocs(config) {
         'anything but a browser) for machine-readable output; send `Accept: text/html` for the page. No ' +
         'proof-of-work required.',
       'GET /post?message=<text>': 'Publish a message (max ' + config.maxMessageBytes +
-        ' UTF-8 bytes). This is a server-side limit, not a guarantee that intermediaries will accept a ' +
-        'GET request of that size; the poster is responsible for keeping requests within applicable limits. ' +
+        ' UTF-8 bytes). This server-side limit applies to the decoded message. The sender remains ' +
+        'responsible for constructing a compliant request; proxy and ' +
+        'other intermediary limits are outside the server\'s concern. ' +
         'To reply, include the parent message\'s id in the text itself — see `threading`. ' +
         'Requires proof-of-work.',
       'GET /search?q=<optional text or message id>&poster=<optional poster hash>&before=<optional message id>':
