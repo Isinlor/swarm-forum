@@ -14,7 +14,7 @@ const { posterHash, isPosterHash } = require('./poster');
 const { loadOrCreateSecret } = require('./secret');
 const { clientIp } = require('./ip');
 const { createRequestRateTracker } = require('./rate');
-const { buildDocs, renderHome, renderMessageJson, escapeHtml } = require('./render');
+const { buildDocs, renderHome, renderMessageJson } = require('./render');
 
 const PERMALINK_RE = /^\/m\/([0-9a-f-]{36})$/i;
 const STATIC_FILES = {
@@ -87,22 +87,24 @@ function loadConfig(overrides = {}) {
   };
 }
 
-function sendJson(res, status, body, cacheControl = 'no-store') {
+function sendJson(res, status, body, cacheControl = 'no-store', extraHeaders = {}) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(payload),
     'Cache-Control': cacheControl,
+    ...extraHeaders,
   });
   res.end(payload);
 }
 
-function sendHtml(res, status, html, cacheControl = 'no-store') {
+function sendHtml(res, status, html, cacheControl = 'no-store', extraHeaders = {}) {
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': Buffer.byteLength(html),
     'Cache-Control': cacheControl,
     'Content-Security-Policy': CSP,
+    ...extraHeaders,
   });
   res.end(html);
 }
@@ -131,19 +133,49 @@ function memoize(fn, ttlMs) {
   };
 }
 
-/** Caches the difficulty computed for a given (endpoint, time-window)
- * pair, so a client that receives a 402 and one that later verifies its
- * solved nonce are always judged against the same number, even though
- * live resource pressure keeps moving. Bounded size, no disk usage. */
+/**
+ * Tracks, per (endpoint, time-window) slot, the lowest difficulty ever
+ * advertised in that slot. `issue()` — called when sending a 402 —
+ * always computes a fresh value from current load, so the ramp reacts
+ * within the request that triggers it rather than lagging up to a whole
+ * slot behind; folding that value into the slot's running minimum is
+ * what `verify()` then checks a submitted nonce against. Judging by the
+ * minimum (not the first-seen or the latest value) means a nonce solved
+ * against whatever a client was actually told is never later rejected
+ * just because load moved between issuance and verification — every
+ * value the tracker recorded for a slot is a real number this process
+ * advertised to someone in it, so honoring the easiest of them costs
+ * nothing verification is meant to protect. Bounded size, no disk usage.
+ */
 function createDifficultyTracker(computeState, baseDifficulty, maxDifficulty) {
-  const cache = new Map();
-  return function difficultyForSlot(endpoint, slot) {
-    const key = `${endpoint}:${slot}`;
-    if (cache.has(key)) return cache.get(key);
-    const value = resources.computeDifficulty(endpoint, computeState(), baseDifficulty, maxDifficulty);
-    cache.set(key, value);
-    if (cache.size > 64) cache.delete(cache.keys().next().value);
-    return value;
+  const minSeen = new Map();
+
+  function freshDifficulty(endpoint) {
+    return resources.computeDifficulty(endpoint, computeState(), baseDifficulty, maxDifficulty);
+  }
+
+  function recordMin(key, value) {
+    const existing = minSeen.get(key);
+    if (existing === undefined || value < existing) minSeen.set(key, value);
+    if (minSeen.size > 64) minSeen.delete(minSeen.keys().next().value);
+  }
+
+  return {
+    // Always the number this specific request is told to solve — never
+    // diluted down to the slot's historical minimum, or the ramp could
+    // never actually advertise a harder value once an easy one occurred.
+    issue(endpoint, slot) {
+      const value = freshDifficulty(endpoint);
+      recordMin(`${endpoint}:${slot}`, value);
+      return value;
+    },
+    verify(endpoint, slot) {
+      const key = `${endpoint}:${slot}`;
+      if (minSeen.has(key)) return minSeen.get(key);
+      const value = freshDifficulty(endpoint);
+      recordMin(key, value);
+      return value;
+    },
   };
 }
 
@@ -174,7 +206,7 @@ function createServer(overrides = {}) {
     loadRatio: rateTracker.ratePerSecond() / config.targetRequestsPerSecond,
   }), 1000);
 
-  const difficultyForSlot = createDifficultyTracker(computeState, config.baseDifficulty, config.maxDifficulty);
+  const difficulty = createDifficultyTracker(computeState, config.baseDifficulty, config.maxDifficulty);
 
   const docs = () => buildDocs({
     version: require('../package.json').version,
@@ -196,13 +228,13 @@ function createServer(overrides = {}) {
   function gate(req, res, url, endpoint) {
     const now = Date.now();
     const nonce = url.searchParams.get('pow');
-    const slotFn = (slot) => difficultyForSlot(endpoint, slot);
-    if (nonce && pow.verifyProof(config.powSecret, url.pathname, url.searchParams, nonce, slotFn, now)) {
+    const verifySlot = (slot) => difficulty.verify(endpoint, slot);
+    if (nonce && pow.verifyProof(config.powSecret, url.pathname, url.searchParams, nonce, verifySlot, now)) {
       return true;
     }
     const currentSlot = pow.timeslotFor(now);
-    const difficulty = slotFn(currentSlot);
-    const challenge = pow.issueChallenge(config.powSecret, url.pathname, url.searchParams, difficulty, now);
+    const difficultyValue = difficulty.issue(endpoint, currentSlot);
+    const challenge = pow.issueChallenge(config.powSecret, url.pathname, url.searchParams, difficultyValue, now);
     sendJson(res, 402, { error: 'proof_of_work_required', ...challenge });
     return false;
   }
@@ -216,11 +248,11 @@ function createServer(overrides = {}) {
         ...docs(),
         updated_at: new Date(snapshot.updatedAt).toISOString(),
         latest_messages: snapshot.messages.map(renderMessageJson),
-      }, homeCacheControl());
+      }, homeCacheControl(), { Vary: 'Accept' });
       return;
     }
     const html = renderHome({ docs: docs(), latest: snapshot.messages, updatedAt: snapshot.updatedAt });
-    sendHtml(res, 200, html, homeCacheControl());
+    sendHtml(res, 200, html, homeCacheControl(), { Vary: 'Accept' });
   }
 
   function handlePermalinkHtml(res, id) {
@@ -235,7 +267,7 @@ function createServer(overrides = {}) {
       updatedAt: Date.now(),
       canonicalPath: `/m/${id}`,
     });
-    sendHtml(res, 200, html);
+    sendHtml(res, 200, html, undefined, { Vary: 'Accept' });
   }
 
   function handlePost(req, res, url) {
@@ -248,7 +280,7 @@ function createServer(overrides = {}) {
     if (!gate(req, res, url, 'post')) return;
 
     const message = url.searchParams.get('message');
-    if (!message || message.length === 0) {
+    if (!message) {
       sendJson(res, 400, { error: 'bad_request', detail: 'message is required' });
       return;
     }
@@ -293,6 +325,15 @@ function createServer(overrides = {}) {
     }
     if (before !== null && !isUuid(before)) {
       sendJson(res, 400, { error: 'bad_request', detail: 'before must be a message id' });
+      return;
+    }
+    // `before` paginates a plain (q-less) walk; combined with `q` it would
+    // silently do nothing (see the dispatch below), which would look to a
+    // paginating caller like every page after the first came back empty
+    // or repeated. Refusing the combination is better than honoring one
+    // and pretending the other still took effect.
+    if (q && before) {
+      sendJson(res, 400, { error: 'bad_request', detail: 'before cannot be combined with q; before paginates a plain walk' });
       return;
     }
     if (!q && !poster && !before) {
@@ -380,7 +421,7 @@ function createServer(overrides = {}) {
     }
   });
 
-  server.swarmForum = { config, db, cache, computeState, difficultyForSlot };
+  server.swarmForum = { config, db, cache, computeState, difficulty };
   server.on('close', () => {
     cache.stop();
     db.close();
@@ -398,4 +439,4 @@ function start(overrides = {}) {
   return server;
 }
 
-module.exports = { createServer, start, loadConfig, escapeHtml };
+module.exports = { createServer, start, loadConfig, createDifficultyTracker };

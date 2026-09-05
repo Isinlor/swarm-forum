@@ -139,6 +139,9 @@ function initBrowser(doc, win) {
   }
 
   // Semi-live view: poll the proof-of-work-free home feed for new posts.
+  // Only on the front page itself — a permalink shows one specific
+  // message, and prepending the latest 100 onto it would silently turn
+  // it into a copy of the front page.
   async function pollLatest() {
     try {
       var res = await win.fetch('/', { headers: { Accept: 'application/json' } });
@@ -149,7 +152,7 @@ function initBrowser(doc, win) {
       /* transient network error; next poll will retry */
     }
   }
-  win.setInterval(pollLatest, 8000);
+  if (win.location.pathname === '/') win.setInterval(pollLatest, 8000);
 
   var postForm = doc.getElementById('post-form');
   var postBody = doc.getElementById('post-body');

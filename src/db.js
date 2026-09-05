@@ -192,4 +192,4 @@ function openDb(filePath) {
   };
 }
 
-module.exports = { openDb, toFtsQuery, rowToMessage, buildSearchMatch, SQL };
+module.exports = { openDb, toFtsQuery, buildSearchMatch, SQL };

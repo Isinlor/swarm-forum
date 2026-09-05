@@ -6,7 +6,7 @@ const net = require('node:net');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { loadConfig, start, createServer } = require('../src/server');
+const { loadConfig, start, createServer, createDifficultyTracker } = require('../src/server');
 const { startTestServer, powFetch, solvePow } = require('./helpers');
 
 test('loadConfig applies overrides, falls back on invalid numbers, and reads env', () => {
@@ -108,6 +108,7 @@ test('GET / defaults to JSON (agents), and serves HTML only when explicitly requ
     assert.equal(jsonByDefault.status, 200);
     assert.match(jsonByDefault.headers.get('content-type'), /application\/json/);
     assert.match(jsonByDefault.headers.get('cache-control'), /public, max-age=/);
+    assert.equal(jsonByDefault.headers.get('vary'), 'Accept');
     const data = await jsonByDefault.json();
     assert.equal(data.name, 'swarm-forum');
     assert.deepEqual(data.latest_messages, []);
@@ -118,6 +119,7 @@ test('GET / defaults to JSON (agents), and serves HTML only when explicitly requ
     assert.equal(html.status, 200);
     assert.match(html.headers.get('content-type'), /text\/html/);
     assert.match(html.headers.get('content-security-policy'), /script-src 'self'/);
+    assert.equal(html.headers.get('vary'), 'Accept');
     const body = await html.text();
     assert.match(body, /swarm-forum/);
   } finally {
@@ -173,17 +175,51 @@ test('unknown paths return 404, including the removed /export endpoint', async (
   }
 });
 
-test('the per-slot difficulty cache evicts its oldest entry once it grows past its cap', async () => {
+test('the per-slot difficulty tracker evicts its oldest entry once it grows past its cap', async () => {
   const ctx = await startTestServer();
   try {
-    const { difficultyForSlot } = ctx.server.swarmForum;
+    const { difficulty } = ctx.server.swarmForum;
     for (let slot = 0; slot < 70; slot += 1) {
-      const value = difficultyForSlot('search', slot);
+      const value = difficulty.issue('search', slot);
       assert.equal(typeof value, 'number');
     }
   } finally {
     await ctx.close();
   }
+});
+
+test('createDifficultyTracker issues a fresh value on every call, but verifies against the lowest one it ever advertised for a slot', () => {
+  let pressure = 0;
+  const baseDifficulty = { search: 10 };
+  const maxDifficulty = { search: 30 };
+  const computeState = () => ({ loadRatio: pressure, dbUsageRatio: 0, diskPressureRatio: 0 });
+  const tracker = createDifficultyTracker(computeState, baseDifficulty, maxDifficulty);
+
+  // Idle, then a load spike, then idle again — each issue() call reflects
+  // whatever computeState says *right now*, not a value cached for the
+  // whole slot.
+  const idle = tracker.issue('search', 1);
+  pressure = 5; // well past extraBits' threshold, so difficulty rises
+  const spiked = tracker.issue('search', 1);
+  pressure = 0;
+  const idleAgain = tracker.issue('search', 1);
+  assert.ok(spiked > idle);
+  assert.equal(idleAgain, idle);
+
+  // A nonce solved against the easy, idle value must still verify even
+  // though a harder value was advertised to someone else in the same
+  // slot afterward — verification uses the slot's minimum, not the
+  // latest or first-seen value.
+  assert.equal(tracker.verify('search', 1), idle);
+});
+
+test('createDifficultyTracker.verify computes and records a fresh value for a slot nothing has issued against yet', () => {
+  let pressure = 0;
+  const computeState = () => ({ loadRatio: pressure, dbUsageRatio: 0, diskPressureRatio: 0 });
+  const tracker = createDifficultyTracker(computeState, { search: 12 }, { search: 30 });
+  assert.equal(tracker.verify('search', 99), 12);
+  pressure = 5; // if verify() recomputed instead of reading back the record, this would change
+  assert.equal(tracker.verify('search', 99), 12);
 });
 
 test('a request sent without an Accept or Host header still resolves via the URL fallback, defaulting to JSON', async () => {
@@ -245,7 +281,13 @@ test('POST /post without proof-of-work is challenged with 402, before any valida
 });
 
 test('an invalid pow nonce is rejected and a fresh challenge is reissued', async () => {
-  const ctx = await startTestServer();
+  // A high post difficulty here isn't about solve time (nothing in this
+  // test ever solves it) — it's what makes an arbitrary garbage nonce
+  // astronomically unlikely to satisfy by pure chance. The test's own
+  // default (a handful of bits, tuned for fast legitimate solving
+  // elsewhere) leaves a real few-percent chance that "not-a-real-nonce"
+  // coincidentally meets it for whatever slot happens to be current.
+  const ctx = await startTestServer({ baseDifficulty: { search: 4, post: 32 } });
   try {
     const res = await fetch(ctx.base + '/post?message=hello&pow=not-a-real-nonce');
     assert.equal(res.status, 402);
@@ -462,6 +504,20 @@ test('search rejects a malformed `before` cursor, and walks the board newest-fir
   }
 });
 
+test('combining q with before is rejected instead of silently ignoring the cursor', async () => {
+  const ctx = await startTestServer();
+  try {
+    const posted = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'paginate me' }));
+    const { message } = await posted.json();
+
+    const combined = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: 'paginate', before: message.id }));
+    assert.equal(combined.status, 400);
+    assert.match((await combined.json()).detail, /before cannot be combined with q/);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('a permalink serves the app shell with that message rendered when HTML is explicitly requested, JSON (via /search) otherwise', async () => {
   const ctx = await startTestServer();
   try {
@@ -474,6 +530,7 @@ test('a permalink serves the app shell with that message rendered when HTML is e
     const html = await fetch(`${ctx.base}/m/${message.id}`, { headers: { Accept: 'text/html' } });
     assert.equal(html.status, 200);
     assert.match(html.headers.get('content-type'), /text\/html/);
+    assert.equal(html.headers.get('vary'), 'Accept');
     const htmlBody = await html.text();
     assert.match(htmlBody, new RegExp(`rel="canonical" href="/m/${message.id}"`));
     assert.match(htmlBody, new RegExp(message.id));

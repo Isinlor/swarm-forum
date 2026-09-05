@@ -20,7 +20,7 @@ test('createLatestCache snapshots on creation and via manual refresh', () => {
   try {
     assert.deepEqual(cache.get().messages, []);
 
-    db.insertMessage({ id: uuidv7(), message: 'hi', ip: '::1', poster: 'poster0000ab' });
+    db.insertMessage({ id: uuidv7(), message: 'hi', poster: 'poster00000000ab' });
     assert.deepEqual(cache.get().messages, []); // not yet refreshed
 
     const snapshot = cache.refresh();
@@ -38,12 +38,12 @@ test('createLatestCache refreshes automatically on its interval and stops on dem
   const db = openDb(path.join(dir, 'test.db'));
   const cache = createLatestCache(db, { intervalMs: 20, limit: 10 });
   try {
-    db.insertMessage({ id: uuidv7(), message: 'auto', ip: '::1', poster: 'poster0000ab' });
+    db.insertMessage({ id: uuidv7(), message: 'auto', poster: 'poster00000000ab' });
     await sleep(100);
     assert.equal(cache.get().messages.length, 1);
 
     cache.stop();
-    db.insertMessage({ id: uuidv7(), message: 'after stop', ip: '::1', poster: 'poster0000ab' });
+    db.insertMessage({ id: uuidv7(), message: 'after stop', poster: 'poster00000000ab' });
     await sleep(100);
     assert.equal(cache.get().messages.length, 1); // no further auto refresh
   } finally {

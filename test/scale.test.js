@@ -23,6 +23,7 @@ const LARGE_N = 500_000;
 const SAMPLES = 200;
 const COMMON_TERM = 'filler';
 const SPARSE_POSTER = 'sparseposter0001'; // ~1 in 5000 rows
+const SANITY_POSTER = 'sanitypost000001';
 
 function avgMs(fn, samples) {
   const start = process.hrtime.bigint();
@@ -31,20 +32,75 @@ function avgMs(fn, samples) {
   return Number(end - start) / 1e6 / samples;
 }
 
-function insertBatch(db, count, offset) {
-  db.raw.exec('BEGIN');
-  try {
-    for (let i = 0; i < count; i += 1) {
-      const n = offset + i;
-      const poster = n % 5000 === 0 ? SPARSE_POSTER : `poster${n % 1000}`;
-      db.insertMessage({
-        id: uuidv7(),
-        message: `${COMMON_TERM} chatter about agents and forums uniquetag${n}`,
-        poster,
-      });
+/**
+ * A handful of rows through the exact code path a real `/post` uses —
+ * `insertMessage()`, which computes `body_hash` and (via the schema's
+ * `messages_ai` trigger) populates the FTS index — checked before any
+ * bulk data exists. This is what keeps the fast bulk loader below
+ * honest: if it ever silently drifted from what production actually
+ * writes, this would be where that surfaces, not somewhere buried in a
+ * 500k-row timing number.
+ */
+function sanityCheckProductionInsertPath(db) {
+  const ids = [];
+  for (let i = 0; i < 5; i += 1) {
+    const { id } = db.insertMessage({
+      id: uuidv7(),
+      message: `sanity check row ${i}`,
+      poster: SANITY_POSTER,
+    });
+    ids.push(id);
+  }
+  for (const id of ids) {
+    const row = db.getById(id);
+    assert.ok(row, `sanity row ${id} was not retrievable via getById`);
+    assert.match(row.message, /^sanity check row \d$/);
+  }
+  const found = db.search('sanity check', 10);
+  assert.equal(found.length, ids.length);
+  const byPoster = db.listByPoster(SANITY_POSTER, 10);
+  assert.equal(byPoster.length, ids.length);
+  return ids.length;
+}
+
+/**
+ * Inserts `count` filler rows (offset by `offset`) entirely inside
+ * SQLite via a recursive CTE, chunked so no single statement has to
+ * hold 500k pending rows in memory at once. This exists purely to make
+ * the test fast: a per-row `insertMessage()` loop pays JS-side SHA-256
+ * and a prepared-statement round trip 500,000 times, which is what
+ * actually made this test slow — not the row count SQLite has to serve
+ * queries against afterward. Ids are `printf`-built from a plain
+ * incrementing counter, zero-padded into the id's leading 8 hex digits,
+ * so id order stays monotonic with insertion order (rowid order) the
+ * same way real UUIDv7 ids are — everything this test asserts about
+ * ORDER BY and recency depends on that holding.
+ */
+function bulkInsertFiller(db, count, offset) {
+  const CHUNK = 50_000;
+  const stmt = db.raw.prepare(`
+    WITH RECURSIVE seq(n) AS (
+      SELECT ?1
+      UNION ALL
+      SELECT n + 1 FROM seq WHERE n < ?2
+    )
+    INSERT INTO messages (id, body, body_hash, poster)
+    SELECT
+      printf('%08x-0000-7000-8000-%012x', n, n),
+      printf('%s chatter about agents and forums uniquetag%d', ?3, n),
+      printf('%064x', n),
+      CASE WHEN n % 5000 = 0 THEN ?4 ELSE printf('poster%d', n % 1000) END
+    FROM seq
+  `);
+  for (let chunkStart = 0; chunkStart < count; chunkStart += CHUNK) {
+    const start = offset + chunkStart;
+    const end = offset + Math.min(chunkStart + CHUNK, count) - 1;
+    db.raw.exec('BEGIN');
+    try {
+      stmt.run(start, end, COMMON_TERM, SPARSE_POSTER);
+    } finally {
+      db.raw.exec('COMMIT');
     }
-  } finally {
-    db.raw.exec('COMMIT');
   }
 }
 
@@ -57,12 +113,14 @@ test('search and lookup cost stay bounded as the table scales to 500k rows', { t
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-scale-'));
   const db = openDb(path.join(dir, 'scale.db'));
   try {
-    insertBatch(db, SMALL_N, 0);
+    const sanityCount = sanityCheckProductionInsertPath(db);
+
+    bulkInsertFiller(db, SMALL_N, 0);
     const smallSearchMs = avgMs(() => db.search(`uniquetag${SMALL_N - 1}`, 20), SAMPLES);
     const smallGetMs = avgMs(() => db.getById(db.walk(1)[0].id), SAMPLES);
 
-    insertBatch(db, LARGE_N - SMALL_N, SMALL_N);
-    assert.equal(db.count(), LARGE_N);
+    bulkInsertFiller(db, LARGE_N - SMALL_N, SMALL_N);
+    assert.equal(db.count(), LARGE_N + sanityCount);
 
     const largeId = db.walk(1)[0].id;
     const largeGetMs = avgMs(() => db.getById(largeId), SAMPLES);

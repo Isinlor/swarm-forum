@@ -30,11 +30,11 @@ test('insertMessage + getById round-trips a message, deriving created_at from th
   withDb((db) => {
     const ts = Date.parse('2024-01-01T00:00:00Z');
     const id = uuidv7(ts);
-    db.insertMessage({ id, message: 'hello there', ip: '127.0.0.1', poster: 'poster0000ab' });
+    db.insertMessage({ id, message: 'hello there', poster: 'poster00000000ab' });
     const found = db.getById(id);
     assert.equal(found.id, id);
     assert.equal(found.message, 'hello there');
-    assert.equal(found.poster, 'poster0000ab');
+    assert.equal(found.poster, 'poster00000000ab');
     assert.equal(found.created_at, '2024-01-01T00:00:00.000Z');
   });
 });
@@ -51,20 +51,20 @@ test('listByPoster returns only that poster\'s messages, most recent first, resp
     for (let i = 0; i < 3; i += 1) {
       const id = uuidv7(1000 + i);
       ids.push(id);
-      db.insertMessage({ id, message: `m${i}`, ip: '::1', poster: 'aaaaaaaaaaaa' });
+      db.insertMessage({ id, message: `m${i}`, poster: 'aaaaaaaaaaaaaaaa' });
     }
-    db.insertMessage({ id: uuidv7(2000), message: 'other poster', ip: '::1', poster: 'bbbbbbbbbbbb' });
+    db.insertMessage({ id: uuidv7(2000), message: 'other poster', poster: 'bbbbbbbbbbbbbbbb' });
 
-    const all = db.listByPoster('aaaaaaaaaaaa', 10);
+    const all = db.listByPoster('aaaaaaaaaaaaaaaa', 10);
     assert.deepEqual(all.map((m) => m.id), [ids[2], ids[1], ids[0]]);
-    assert.ok(all.every((m) => m.poster === 'aaaaaaaaaaaa'));
+    assert.ok(all.every((m) => m.poster === 'aaaaaaaaaaaaaaaa'));
 
-    const limited = db.listByPoster('aaaaaaaaaaaa', 2);
+    const limited = db.listByPoster('aaaaaaaaaaaaaaaa', 2);
     assert.equal(limited.length, 2);
 
-    assert.deepEqual(db.listByPoster('cccccccccccc', 10), []);
+    assert.deepEqual(db.listByPoster('cccccccccccccccc', 10), []);
 
-    const beforeCursor = db.listByPoster('aaaaaaaaaaaa', 10, ids[2]);
+    const beforeCursor = db.listByPoster('aaaaaaaaaaaaaaaa', 10, ids[2]);
     assert.deepEqual(beforeCursor.map((m) => m.id), [ids[1], ids[0]]);
   });
 });
@@ -75,7 +75,7 @@ test('walk lists messages newest-first and resumes from a cursor id', () => {
     for (let i = 0; i < 5; i += 1) {
       const id = uuidv7(1000 + i);
       ids.push(id);
-      db.insertMessage({ id, message: `m${i}`, poster: 'poster0000ab' });
+      db.insertMessage({ id, message: `m${i}`, poster: 'poster00000000ab' });
     }
 
     assert.deepEqual(db.walk(10).map((m) => m.id), [...ids].reverse());
@@ -87,8 +87,8 @@ test('walk lists messages newest-first and resumes from a cursor id', () => {
 test('count reflects the number of stored messages', () => {
   withDb((db) => {
     assert.equal(db.count(), 0);
-    db.insertMessage({ id: uuidv7(), message: 'x', ip: '::1', poster: 'poster0000ab' });
-    db.insertMessage({ id: uuidv7(), message: 'y', ip: '::1', poster: 'poster0000ab' });
+    db.insertMessage({ id: uuidv7(), message: 'x', poster: 'poster00000000ab' });
+    db.insertMessage({ id: uuidv7(), message: 'y', poster: 'poster00000000ab' });
     assert.equal(db.count(), 2);
   });
 });
@@ -96,9 +96,9 @@ test('count reflects the number of stored messages', () => {
 test('search finds messages containing all query tokens regardless of order', () => {
   withDb((db) => {
     const a = uuidv7();
-    db.insertMessage({ id: a, message: 'the quick brown fox', ip: '::1', poster: 'poster0000ab' });
+    db.insertMessage({ id: a, message: 'the quick brown fox', poster: 'poster00000000ab' });
     const b = uuidv7();
-    db.insertMessage({ id: b, message: 'lazy dog sleeps', ip: '::1', poster: 'poster0000ab' });
+    db.insertMessage({ id: b, message: 'lazy dog sleeps', poster: 'poster00000000ab' });
 
     const results = db.search('brown quick');
     assert.equal(results.length, 1);
@@ -111,14 +111,14 @@ test('search finds messages containing all query tokens regardless of order', ()
 test('search accepts a poster filter, restricting matches to that poster', () => {
   withDb((db) => {
     const a = uuidv7();
-    db.insertMessage({ id: a, message: 'shared keyword from alice', ip: '::1', poster: 'aaaaaaaaaaaa' });
+    db.insertMessage({ id: a, message: 'shared keyword from alice', poster: 'aaaaaaaaaaaaaaaa' });
     const b = uuidv7();
-    db.insertMessage({ id: b, message: 'shared keyword from bob', ip: '::1', poster: 'bbbbbbbbbbbb' });
+    db.insertMessage({ id: b, message: 'shared keyword from bob', poster: 'bbbbbbbbbbbbbbbb' });
 
     const unfiltered = db.search('shared keyword');
     assert.equal(unfiltered.length, 2);
 
-    const filtered = db.search('shared keyword', 20, 'aaaaaaaaaaaa');
+    const filtered = db.search('shared keyword', 20, 'aaaaaaaaaaaaaaaa');
     assert.equal(filtered.length, 1);
     assert.equal(filtered[0].id, a);
   });
@@ -126,7 +126,7 @@ test('search accepts a poster filter, restricting matches to that poster', () =>
 
 test('search with a query that tokenizes to nothing returns no results', () => {
   withDb((db) => {
-    db.insertMessage({ id: uuidv7(), message: 'hello', ip: '::1', poster: 'poster0000ab' });
+    db.insertMessage({ id: uuidv7(), message: 'hello', poster: 'poster00000000ab' });
     assert.deepEqual(db.search('!!!'), []);
   });
 });
@@ -135,7 +135,7 @@ test('recentDuplicate finds identical text at or after the cutoff id, ignores di
   withDb((db) => {
     const now = Date.now();
     const id = uuidv7(now);
-    db.insertMessage({ id, message: 'repeat me', ip: '::1', poster: 'poster0000ab' });
+    db.insertMessage({ id, message: 'repeat me', poster: 'poster00000000ab' });
 
     assert.equal(db.recentDuplicate('repeat me', minUuidv7ForTimestamp(now - 1000)), true);
     assert.equal(db.recentDuplicate('repeat me', minUuidv7ForTimestamp(now + 1000)), false);
@@ -166,7 +166,7 @@ test('fileSizeBytes counts the -wal file too, under WAL journal mode', () => {
   withDb((db) => {
     const before = db.fileSizeBytes();
     // an uncommitted-but-flushed write grows the -wal file, not the main one
-    db.insertMessage({ id: uuidv7(), message: 'wal growth check', poster: 'poster0000ab' });
+    db.insertMessage({ id: uuidv7(), message: 'wal growth check', poster: 'poster00000000ab' });
     assert.ok(db.fileSizeBytes() >= before);
     assert.ok(fs.existsSync(`${db.filePath}-wal`));
   });
