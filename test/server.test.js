@@ -395,15 +395,16 @@ test('a reply-by-convention (parent id embedded in text) surfaces via search, or
   }
 });
 
-test('a padded query (whitespace around a uuid) still takes the direct id-lookup path', async () => {
+test('a padded uppercase UUID query is canonicalized before the direct id lookup', async () => {
   const ctx = await startTestServer();
   try {
     const posted = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'trim me' }));
     const { message } = await posted.json();
 
-    const padded = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: `  ${message.id}  ` }));
+    const padded = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: `  ${message.id.toUpperCase()}  ` }));
     const body = await padded.json();
     assert.equal(body.count, 1);
+    assert.equal(body.query, message.id);
     assert.equal(body.results[0].id, message.id);
   } finally {
     await ctx.close();
@@ -422,14 +423,16 @@ test('poster filters and lists work as their own query parameter, gated before v
     const invalidPoster = await powFetch(ctx.base, '/search?' + new URLSearchParams({ poster: 'not-a-hash' }));
     assert.equal(invalidPoster.status, 400);
 
-    const listByPoster = await powFetch(ctx.base, '/search?' + new URLSearchParams({ poster: message.poster }));
+    const listByPoster = await powFetch(ctx.base, '/search?' + new URLSearchParams({ poster: message.poster.toUpperCase() }));
     assert.equal(listByPoster.status, 200);
     const listBody = await listByPoster.json();
     assert.equal(listBody.query, null);
     assert.equal(listBody.poster, message.poster);
     assert.ok(listBody.results.some((m) => m.id === message.id));
 
-    const combined = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: 'poster query test', poster: message.poster }));
+    const combined = await powFetch(ctx.base, '/search?' + new URLSearchParams({
+      q: 'poster query test', poster: message.poster.toUpperCase(),
+    }));
     const combinedBody = await combined.json();
     assert.equal(combinedBody.count, 1);
     assert.equal(combinedBody.results[0].id, message.id);
@@ -491,7 +494,7 @@ test('search rejects a malformed `before` cursor, and walks the board newest-fir
     const second = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'walk two' }));
     const m2 = (await second.json()).message;
 
-    const page1 = await powFetch(ctx.base, '/search?' + new URLSearchParams({ before: m2.id }));
+    const page1 = await powFetch(ctx.base, '/search?' + new URLSearchParams({ before: m2.id.toUpperCase() }));
     const page1Body = await page1.json();
     assert.equal(page1Body.before, m2.id);
     assert.deepEqual(page1Body.results.map((m) => m.id), [m1.id]);
@@ -531,7 +534,11 @@ test('a permalink serves the app shell with that message rendered when HTML is e
     assert.match(htmlBody, new RegExp(`rel="canonical" href="/m/${message.id}"`));
     assert.match(htmlBody, new RegExp(message.id));
 
-    const json = await powFetch(ctx.base, `/m/${message.id}`, { headers: { Accept: 'application/json' } });
+    const uppercase = await fetch(`${ctx.base}/m/${message.id.toUpperCase()}`, { headers: { Accept: 'text/html' } });
+    assert.equal(uppercase.status, 200);
+    assert.match(await uppercase.text(), new RegExp(`rel="canonical" href="/m/${message.id}"`));
+
+    const json = await powFetch(ctx.base, `/m/${message.id.toUpperCase()}`, { headers: { Accept: 'application/json' } });
     assert.equal(json.status, 200);
     const data = await json.json();
     assert.equal(data.query, message.id);
