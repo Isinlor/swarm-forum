@@ -7,7 +7,7 @@
  * proof-of-work: the cost of reading the board no longer scales with the
  * number of readers.
  */
-function createLatestCache(db, { intervalMs = 5000, limit = 100 } = {}) {
+function createLatestCache(db, { intervalMs = 5000, limit = 100, onError = console.error } = {}) {
   let snapshot = { updatedAt: 0, messages: [] };
 
   function refresh() {
@@ -16,7 +16,9 @@ function createLatestCache(db, { intervalMs = 5000, limit = 100 } = {}) {
   }
 
   refresh();
-  const timer = setInterval(refresh, intervalMs);
+  const timer = setInterval(() => {
+    try { refresh(); } catch (err) { onError(err); }
+  }, intervalMs);
   timer.unref();
 
   return {

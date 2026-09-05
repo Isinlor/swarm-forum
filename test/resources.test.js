@@ -10,21 +10,20 @@ test('dbUsageRatio: zero when uncapped, proportional otherwise, capped at 2', ()
   assert.equal(resources.dbUsageRatio(1000, 100), 2);
 });
 
-test('freeDiskBytes returns a real number for a real dir, Infinity on error', () => {
+test('freeDiskBytes returns a real number and fails closed on error', () => {
   const free = resources.freeDiskBytes('.');
   assert.equal(typeof free, 'number');
   assert.ok(free > 0);
-  assert.equal(resources.freeDiskBytes('/path/does/not/exist/at/all'), Infinity);
+  assert.throws(() => resources.freeDiskBytes('/path/does/not/exist/at/all'), /ENOENT/);
 });
 
-test('diskPressureRatio: zero when unconfigured, proportional otherwise, capped at 2', () => {
+test('diskPressureRatio ramps continuously from four times the floor to the hard cutoff', () => {
   assert.equal(resources.diskPressureRatio(5000, 0), 0);
-  assert.equal(resources.diskPressureRatio(Infinity, 1000), 0); // unmeasurable -> no pressure
-  assert.equal(resources.diskPressureRatio(500, 1000), 0.5);
+  assert.equal(resources.diskPressureRatio(4000, 1000), 0);
+  assert.equal(resources.diskPressureRatio(2500, 1000), 0.5);
+  assert.equal(resources.diskPressureRatio(1000, 1000), 1);
   assert.equal(resources.diskPressureRatio(0, 1000), 1);
-  assert.equal(resources.diskPressureRatio(-1000, 1000), 2); // clamped
 });
-
 test('extraBits stays zero at or below threshold, ramps up above it, and is clamped to maxBits', () => {
   assert.equal(resources.extraBits(0, 0.5, 2, 10), 0);
   assert.equal(resources.extraBits(0.5, 0.5, 2, 10), 0);

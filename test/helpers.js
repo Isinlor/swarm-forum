@@ -35,9 +35,10 @@ async function powFetch(base, urlPath, fetchOpts = {}) {
     const res = await fetch(base + current, fetchOpts);
     if (res.status !== 402) return res;
     const body = await res.json();
-    const nonce = solvePow(body.challenge, body.difficulty);
+    const nonce = solvePow(body.ticket, body.difficulty);
     const u = new URL(base + current);
     u.searchParams.set('pow', nonce);
+    u.searchParams.set('ticket', body.ticket);
     current = u.pathname + u.search;
   }
   throw new Error('pow_retry_exhausted');

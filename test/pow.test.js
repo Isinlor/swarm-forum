@@ -1,128 +1,56 @@
 'use strict';
-
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 const pow = require('../src/pow');
-
-test('canonicalRequest sorts params, drops pow, and omits the query string when empty', () => {
-  const withParams = new URLSearchParams('b=2&a=1&pow=ignored');
-  assert.equal(pow.canonicalRequest('/search', withParams), '/search?a=1&b=2');
-
-  const empty = new URLSearchParams();
-  assert.equal(pow.canonicalRequest('/export', empty), '/export');
-
-  const onlyPow = new URLSearchParams('pow=x');
-  assert.equal(pow.canonicalRequest('/post', onlyPow), '/post');
-
-  // Duplicate keys are valid in a query string; sorting must handle two
-  // equal keys (a stable no-op) rather than only ever comparing distinct ones.
-  const duplicateKeys = new URLSearchParams('a=1&a=2');
-  assert.equal(pow.canonicalRequest('/x', duplicateKeys), '/x?a=1&a=2');
+function solve(ticket, difficulty) { for (let n = 0;; n += 1) if (pow.meetsDifficulty(ticket, String(n), difficulty)) return String(n); }
+test('canonicalRequest sorts parameters and excludes payment fields', () => {
+  assert.equal(pow.canonicalRequest('/x', new URLSearchParams('z=2&pow=n&a=1&ticket=t')), '/x?a=1&z=2');
+  assert.equal(pow.canonicalRequest('/x', new URLSearchParams('a=2&a=1')), '/x?a=2&a=1');
 });
-
-test('challengeFor is deterministic for the same inputs and changes with any input', () => {
-  const a = pow.challengeFor('secret', '/post?message=hi', 100);
-  const b = pow.challengeFor('secret', '/post?message=hi', 100);
-  assert.equal(a, b);
-  assert.notEqual(a, pow.challengeFor('other-secret', '/post?message=hi', 100));
-  assert.notEqual(a, pow.challengeFor('secret', '/post?message=bye', 100));
-  assert.notEqual(a, pow.challengeFor('secret', '/post?message=hi', 101));
+test('leadingZeroBits and meetsDifficulty count exact leading bits', () => {
+  assert.equal(pow.leadingZeroBits('000f'), 12); assert.equal(pow.leadingZeroBits('8fff'), 0);
+  assert.equal(pow.meetsDifficulty('x', 'n', 0), true);
 });
-
-test('leadingZeroBits counts bits across every nibble value', () => {
-  assert.equal(pow.leadingZeroBits('0000ff'), 16);
-  assert.equal(pow.leadingZeroBits('1fff'), 3);
-  assert.equal(pow.leadingZeroBits('2fff'), 2);
-  assert.equal(pow.leadingZeroBits('3fff'), 2);
-  assert.equal(pow.leadingZeroBits('4fff'), 1);
-  assert.equal(pow.leadingZeroBits('7fff'), 1);
-  assert.equal(pow.leadingZeroBits('8fff'), 0);
-  assert.equal(pow.leadingZeroBits('ffff'), 0);
-  assert.equal(pow.leadingZeroBits('00000000'), 32);
-});
-
-test('meetsDifficulty is true only when the hash clears the bar', () => {
-  const challenge = 'fixed-challenge';
-  let nonce = 0;
-  while (!pow.meetsDifficulty(challenge, String(nonce), 8)) nonce += 1;
-  assert.ok(pow.meetsDifficulty(challenge, String(nonce), 8));
-  assert.ok(pow.meetsDifficulty(challenge, String(nonce), 0));
-  assert.equal(pow.meetsDifficulty(challenge, String(nonce), 256), false);
-});
-
-test('issueChallenge returns a self-consistent challenge for the current window', () => {
-  const now = Date.now();
-  const searchParams = new URLSearchParams('message=hi');
-  const issued = pow.issueChallenge('secret', '/post', searchParams, 10, now);
-  assert.equal(issued.algorithm, 'sha256');
-  assert.equal(issued.difficulty, 10);
-  assert.equal(typeof issued.challenge, 'string');
-  assert.equal(issued.challenge.length, 64);
-  assert.equal(issued.expires_in, Math.round((pow.WINDOW_MS * pow.WINDOW_TOLERANCE) / 1000));
-
-  const expected = pow.challengeFor('secret', '/post?message=hi', pow.timeslotFor(now));
-  assert.equal(issued.challenge, expected);
-});
-
-function solveFor(secret, pathname, searchParams, difficulty, slot) {
-  const challenge = pow.challengeFor(secret, pow.canonicalRequest(pathname, searchParams), slot);
-  let nonce = 0;
-  for (;;) {
-    const digest = crypto.createHash('sha256').update(`${challenge}:${nonce}`).digest('hex');
-    if (pow.leadingZeroBits(digest) >= difficulty) return String(nonce);
-    nonce += 1;
-  }
-}
-
-test('verifyProof rejects missing, empty, and oversized nonces without hashing', () => {
-  const searchParams = new URLSearchParams('message=hi');
-  const alwaysZero = () => 0;
-  assert.equal(pow.verifyProof('secret', '/post', searchParams, undefined, alwaysZero), false);
-  assert.equal(pow.verifyProof('secret', '/post', searchParams, '', alwaysZero), false);
-  assert.equal(pow.verifyProof('secret', '/post', searchParams, 'x'.repeat(129), alwaysZero), false);
-});
-
-test('verifyProof accepts a nonce solved for the current window', () => {
-  const now = Date.now();
-  const searchParams = new URLSearchParams('message=hi');
-  const slot = pow.timeslotFor(now);
-  const nonce = solveFor('secret', '/post', searchParams, 8, slot);
-  const difficultyForSlot = () => 8;
-  assert.equal(pow.verifyProof('secret', '/post', searchParams, nonce, difficultyForSlot, now), true);
-});
-
-test('verifyProof accepts a nonce solved for a previous window within tolerance', () => {
-  const now = Date.now();
-  const searchParams = new URLSearchParams('message=hi');
-  const previousSlot = pow.timeslotFor(now) - (pow.WINDOW_TOLERANCE - 1);
-  const nonce = solveFor('secret', '/post', searchParams, 8, previousSlot);
-  const difficultyForSlot = () => 8;
-  assert.equal(pow.verifyProof('secret', '/post', searchParams, nonce, difficultyForSlot, now), true);
-});
-
-test('verifyProof rejects a nonce solved outside the tolerance window', () => {
-  const now = Date.now();
-  const searchParams = new URLSearchParams('message=hi');
-  const tooOldSlot = pow.timeslotFor(now) - pow.WINDOW_TOLERANCE;
-  const nonce = solveFor('secret', '/post', searchParams, 8, tooOldSlot);
-  const difficultyForSlot = () => 8;
-  assert.equal(pow.verifyProof('secret', '/post', searchParams, nonce, difficultyForSlot, now), false);
-});
-
-test('verifyProof rejects a nonce that never meets any window difficulty', () => {
-  const now = Date.now();
-  const searchParams = new URLSearchParams('message=hi');
-  const difficultyForSlot = () => 64; // effectively unsatisfiable in a test
-  assert.equal(pow.verifyProof('secret', '/post', searchParams, '0', difficultyForSlot, now), false);
-});
-
-test('verifyProof binds the proof to the exact request parameters', () => {
-  const now = Date.now();
+test('signed tickets enforce request, difficulty, expiry, instance, and nonce', () => {
   const params = new URLSearchParams('message=hi');
-  const slot = pow.timeslotFor(now);
-  const nonce = solveFor('secret', '/post', params, 8, slot);
-  const differentParams = new URLSearchParams('message=bye');
-  const difficultyForSlot = () => 8;
-  assert.equal(pow.verifyProof('secret', '/post', differentParams, nonce, difficultyForSlot, now), false);
+  const issued = pow.issueTicket('secret', 'instance', '/post', params, 4, { now: 1000, lifetimeMs: 100 });
+  const nonce = solve(issued.ticket, issued.difficulty);
+  assert.equal(issued.expires_at, 1100); assert.equal(issued.expires_in, 1);
+  assert.ok(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, nonce, { now: 1050 }));
+  assert.equal(pow.verifyTicket('wrong', 'instance', '/post', params, issued.ticket, nonce, { now: 1050 }), null);
+  assert.equal(pow.verifyTicket('secret', 'other', '/post', params, issued.ticket, nonce, { now: 1050 }), null);
+  assert.equal(pow.verifyTicket('secret', 'instance', '/post', new URLSearchParams('message=no'), issued.ticket, nonce, { now: 1050 }), null);
+  assert.equal(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, nonce, { now: 1100 }), null);
+  assert.equal(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, 'bad', { now: 1050 }), null);
+});
+test('tickets deliberately remain valid across network-source changes', () => {
+  const params = new URLSearchParams('message=hi');
+  const issued = pow.issueTicket('secret', 'i', '/post', params, 0);
+  assert.ok(pow.verifyTicket('secret', 'i', '/post', params, issued.ticket, 'n'));
+});
+test('ticket store consumes each id once and prunes expired ids', () => {
+  const store = pow.createTicketStore(); assert.equal(store.consume('a', 20, 10), true);
+  assert.equal(store.consume('a', 20, 10), false); assert.equal(store.size, 1);
+  assert.equal(store.consume('b', 30, 20), true); assert.equal(store.size, 1);
+});
+test('malformed tickets and nonces fail closed', () => {
+  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'bad', 'n'), null);
+  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'x.y', ''), null);
+  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'x'.repeat(1025), 'n'), null);
+  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'x.y', 3), null);
+  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), '.x', 'n'), null);
+});
+
+test('every malformed signed ticket contract fails closed', () => {
+  const crypto = require('node:crypto'); const params = new URLSearchParams();
+  function signed(payload) { const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url'); return encoded + '.' + crypto.createHmac('sha256', 's').update(encoded).digest('base64url'); }
+  const r = crypto.createHash('sha256').update('/').digest('base64url');
+  const good = { r, d: 0, e: Date.now() + 10000, j: 'id', i: 'i' };
+  for (const bad of [null, { ...good, d: 1.5 }, { ...good, d: -1 }, { ...good, d: 257 },
+    { ...good, e: 'later' }, { ...good, j: 3 }])
+    assert.equal(pow.verifyTicket('s', 'i', '/', params, signed(bad), 'n'), null);
+  const encoded = Buffer.from('{').toString('base64url'); const malformed = encoded + '.' + crypto.createHmac('sha256', 's').update(encoded).digest('base64url');
+  assert.equal(pow.verifyTicket('s', 'i', '/', params, malformed, 'n'), null);
+  assert.equal(pow.verifyTicket('s', 'i', '/', params, signed(good) + 'extra', 'n'), null);
+  assert.equal(pow.verifyTicket('s', 'i', '/', params, signed(good), 'x'.repeat(129)), null);
 });

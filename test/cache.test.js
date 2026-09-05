@@ -52,3 +52,11 @@ test('createLatestCache refreshes automatically on its interval and stops on dem
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('automatic refresh logs failures and retains the last snapshot', async () => {
+  let calls = 0; const errors = [];
+  const db = { walk() { calls += 1; if (calls > 1) throw new Error('sqlite failed'); return [{ id: 'old' }]; } };
+  const cache = createLatestCache(db, { intervalMs: 10, onError: (err) => errors.push(err) });
+  try { await sleep(35); assert.deepEqual(cache.get().messages, [{ id: 'old' }]); assert.ok(errors.length > 0); }
+  finally { cache.stop(); }
+});

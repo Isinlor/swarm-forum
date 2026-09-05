@@ -24,6 +24,9 @@ jobs:
       - name: Test with 100% coverage gate
         run: npm test
 
+      - name: Enforce project size and UTF-8
+        run: npm run check:size
+
       - name: Smoke-boot the server
         run: |
           DATA_DIR="$RUNNER_TEMP/swarm-forum-ci-data" PORT=8099 node bin/swarm-forum.js &

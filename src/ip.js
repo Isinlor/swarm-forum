@@ -13,12 +13,12 @@
  * entries were written by hops we actually trust — anything to their
  * left could be attacker-supplied and is ignored.
  */
-function clientIp(req, trustProxyHops) {
-  if (trustProxyHops > 0) {
-    const header = req.headers['x-forwarded-for'];
+function clientIp(req, headerName, hops = 1) {
+  if (headerName) {
+    const header = req.headers[headerName.toLowerCase()];
     if (header) {
       const parts = header.split(',').map((part) => part.trim()).filter(Boolean);
-      const index = parts.length - trustProxyHops;
+      const index = parts.length - hops;
       if (index >= 0 && parts[index]) return parts[index];
     }
   }
