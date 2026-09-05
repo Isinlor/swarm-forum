@@ -13,7 +13,7 @@ const resources = require('./resources');
 const { posterHash, isPosterHash } = require('./poster');
 const { loadOrCreateSecret } = require('./secret');
 const { clientIp } = require('./ip');
-const { createRequestRateTracker } = require('./rate');
+const { createRequestRateTracker, createPerSecondLimiter } = require('./rate');
 const { buildDocs, renderHome, renderMessageJson } = require('./render');
 
 const STATIC_FILES = {
@@ -72,6 +72,7 @@ function loadConfig(overrides = {}) {
     maxDbSizeBytes: num('maxDbSizeBytes', num('MAX_DB_SIZE_BYTES', 500 * 1024 * 1024)),
     minFreeBytes: num('minFreeBytes', num('MIN_FREE_BYTES', 1024 * 1024 * 1024)),
     targetRequestsPerSecond: num('targetRequestsPerSecond', num('TARGET_REQUESTS_PER_SECOND', 5)),
+    maxPostsPerSecond: num('maxPostsPerSecond', num('MAX_POSTS_PER_SECOND', 100)),
     baseDifficulty: overrides.baseDifficulty || {
       search: num('baseDifficultySearch', num('BASE_DIFFICULTY_SEARCH', resources.BASE_DIFFICULTY.search)),
       post: num('baseDifficultyPost', num('BASE_DIFFICULTY_POST', resources.BASE_DIFFICULTY.post)),
@@ -82,7 +83,7 @@ function loadConfig(overrides = {}) {
     },
   };
   const positive = ['maxMessageBytes', 'maxQueryLength', 'resultLimit', 'latestLimit',
-    'cacheIntervalMs', 'targetRequestsPerSecond'];
+    'cacheIntervalMs', 'targetRequestsPerSecond', 'maxPostsPerSecond'];
   const nonnegative = ['port', 'maxDbSizeBytes', 'minFreeBytes'];
   const integers = [...positive, ...nonnegative, 'clientIpHops'];
   for (const name of integers) if (!Number.isInteger(config[name])) throw new Error(`${name} must be an integer`);
@@ -186,6 +187,7 @@ function createServer(overrides = {}) {
   const db = openDb(config.dbFile);
   const cache = createLatestCache(db, { intervalMs: config.cacheIntervalMs, limit: config.latestLimit });
   const rateTracker = createRequestRateTracker();
+  const postRateLimiter = createPerSecondLimiter(config.maxPostsPerSecond);
   const instanceId = crypto.randomBytes(16).toString('base64url');
   const tickets = pow.createTicketStore();
 
@@ -204,6 +206,7 @@ function createServer(overrides = {}) {
     maxMessageBytes: config.maxMessageBytes,
     maxQueryLength: config.maxQueryLength,
     resultLimit: config.resultLimit,
+    maxPostsPerSecond: config.maxPostsPerSecond,
     powWindowSeconds: Math.round(pow.TICKET_LIFETIME_MS / 1000),
     baseDifficulty: config.baseDifficulty,
     maxDifficulty: config.maxDifficulty,
@@ -299,6 +302,11 @@ function createServer(overrides = {}) {
       sendJson(res, 507, { error: 'insufficient_storage', detail: 'capacity could not be verified' }); return; }
     if (resources.isOverCapacity(finalState)) { sendJson(res, 507, { error: 'insufficient_storage', detail: 'the board is at capacity; try again later' }); return; }
     if (!consume(paid)) { sendJson(res, 409, { error: 'ticket_already_used' }); return; }
+    if (!postRateLimiter.take()) {
+      sendJson(res, 429, { error: 'rate_limit_exceeded', detail: `at most ${config.maxPostsPerSecond} posts are accepted per second` },
+        'no-store', { 'Retry-After': '1' });
+      return;
+    }
     const ip = clientIp(req, config.clientIpHeader, config.clientIpHops);
     const id = uuidv7();
     db.insertMessage({ id, message, poster: posterHash(config.posterSecret, ip) });
@@ -418,7 +426,7 @@ function createServer(overrides = {}) {
     }
   });
 
-  server.swarmForum = { config, db, cache, computeState, tickets, instanceId };
+  server.swarmForum = { config, db, cache, computeState, tickets, instanceId, postRateLimiter };
   server.on('close', () => {
     cache.stop();
     db.close();
