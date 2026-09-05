@@ -29,13 +29,15 @@ test('extraBits stays zero at or below threshold, ramps up above it, and is clam
   assert.equal(resources.extraBits(5, 0.6, 1.5, 8), 8);
 });
 
-test('computeDifficulty adds load and disk pressure on top of each endpoint base, clamped to maxDifficulty', () => {
+test('computeDifficulty adds load and post-only disk pressure, clamped to maxDifficulty', () => {
   const idle = { loadRatio: 0, diskPressureRatio: 0 };
   assert.equal(resources.computeDifficulty('search', idle), resources.BASE_DIFFICULTY.search);
   assert.equal(resources.computeDifficulty('post', idle), resources.BASE_DIFFICULTY.post);
 
   const loaded = { loadRatio: 2, diskPressureRatio: 0.9 };
   assert.ok(resources.computeDifficulty('post', loaded) > resources.BASE_DIFFICULTY.post);
+  assert.equal(resources.computeDifficulty('search', { loadRatio: 0, diskPressureRatio: 1 }),
+    resources.BASE_DIFFICULTY.search);
 
   // The total stays within MAX_DIFFICULTY when pressure sources stack.
   const maxed = { loadRatio: 5, diskPressureRatio: 2 };
@@ -51,7 +53,7 @@ test('computeDifficulty accepts custom base/max difficulty tables', () => {
   assert.equal(value, 3);
 });
 
-test('computeDifficulty is uncapped for an endpoint with no entry in the max-difficulty table', () => {
+test('post difficulty is uncapped for an endpoint with no entry in the max-difficulty table', () => {
   const maxed = { loadRatio: 5, diskPressureRatio: 2 };
   const value = resources.computeDifficulty('post', maxed, { post: 3 }, {});
   assert.ok(value > 3); // load(8) + disk(12) extra bits, nothing capping the total

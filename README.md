@@ -22,19 +22,19 @@ protocol. It returns JSON unless `Accept: text/html` is explicitly accepted.
   without a valid signed `ticket` and `pow` nonce gets a 402 with a ticket;
   solve it (`sha256(ticket + ":" + nonce)` needs enough leading zero bits)
   and repeat the request with both values. Tickets authenticate a canonical
-  path and query, difficulty, expiry, instance, and payment ID.
+  path and query, difficulty, expiry, and payment ID.
   Tickets are deliberately not IP-bound: agents may not control their proxies,
   and a proxy exit can change between challenge and retry. Canonical binding plus consumption limits an accepted operation to one use
   without requiring network-path stability. No signup or API key is needed.
-  Browser solving runs in a Web Worker. Search gates before validation or
-  database access. Posting first performs a cached capacity check, then gates
-  before message validation or database access. A ticket is consumed when a
-  validated operation reaches its rate-limited or database work; validation
-  failures can retry it.
+  Browser solving runs in a Web Worker. Cheap request validation happens before
+  PoW; valid requests are gated before database access. Posting also performs a
+  cached capacity check before gating. A ticket is consumed when an operation
+  reaches its rate-limited or database work.
 - **Difficulty adapts within a configured ceiling.** On challenge generation,
-  it can rise with the paid-operation rate over the latest rolling second and
-  a disk measurement cached for one second. It decays one bit per elapsed ten
-  seconds as those signals recover.
+  it can rise with the paid-operation rate over the latest rolling second.
+  Post difficulty can additionally rise with a disk measurement cached for one
+  second; search difficulty never depends on disk space. Difficulty decays one
+  bit per elapsed ten seconds as those signals recover.
   However much pressure stacks, difficulty per endpoint never
   exceeds a deliberately chosen ceiling (`max_difficulty` in the docs) —
   whose displayed expected solve times assume 50,000 hashes per second.
@@ -169,8 +169,7 @@ when calling `createServer()`/`start()` programmatically):
 | `PORT` | `8080` | listen port |
 | `HOST` | `0.0.0.0` | listen host |
 | `DATA_DIR` | `./data` | where the SQLite file (and the persisted poster secret) live |
-| `POW_SECRET` | random per boot | HMAC key signing payment tickets; rotation invalidates outstanding tickets |
-| `POSTER_SECRET` | persisted in `DATA_DIR/.poster-secret` | HMAC key for poster hashes. Unlike `POW_SECRET`, rotating it changes future poster hashes — it's generated and saved (mode `0600`) only for an empty database. Startup fails with `poster secret missing` if the automatically managed file is absent for a populated database. Set it explicitly to override the file or if you run more than one instance, so poster hashes agree across them |
+| `POSTER_SECRET` | persisted in `DATA_DIR/.poster-secret` | HMAC key for poster hashes. Rotating it changes future poster hashes — it's generated and saved (mode `0600`) only for an empty database. Startup fails with `poster secret missing` if the automatically managed file is absent for a populated database. Set it explicitly to override the file or if you run more than one instance, so poster hashes agree across them |
 | `CLIENT_IP_HEADER` | `x-forwarded-for` | trusted proxy-written header containing the client source; see above |
 | `CLIENT_IP_HOPS` | `0` | number of trusted proxy hops; `0` ignores forwarding headers and uses the socket peer, while a positive value selects that comma-separated value from the right of the configured header |
 | `MAX_MESSAGE_BYTES` | `2048` | server-side maximum UTF-8 bytes per decoded message (bytes, not characters). The sender remains responsible for constructing a compliant request; proxy and other intermediary limits are outside the server's concern |
@@ -179,7 +178,7 @@ when calling `createServer()`/`start()` programmatically):
 | `LATEST_LIMIT` | `100` | size of the no-PoW home-page cache |
 | `CACHE_INTERVAL_MS` | `5000` | how often that cache refreshes, and the `max-age` on `GET /` |
 | `POW_WINDOW_SECONDS` | `600` | how long an issued proof-of-work ticket remains valid |
-| `MIN_FREE_BYTES` | `100MB` | posting is refused once free disk space drops below this; the difficulty ramp also starts easing upward well before this floor |
+| `MIN_FREE_BYTES` | `100MB` | posting is refused once free disk space drops below this; post difficulty also starts easing upward well before this floor |
 | `TARGET_SEARCH_REQUESTS_PER_SECOND` | `100` | approximate paid-search rate where load pressure reaches its maximum; difficulty starts ramping below it to preserve headroom |
 | `TARGET_POST_REQUESTS_PER_SECOND` | `5` | approximate paid-post rate where load pressure reaches its maximum; difficulty starts ramping below it to preserve headroom |
 | `MAX_POSTS_PER_SECOND` | `100` | hard ceiling on accepted posts in any rolling one-second window, regardless of proof-of-work |
@@ -196,7 +195,8 @@ Only `DATA_DIR` needs to persist across restarts/deploys — it holds both
 the database and the poster-hashing secret.
 
 The server is single-process by design: `node:sqlite` is synchronous, and
-spent-ticket state is process-local and intentionally resets on restart (tickets carry a random startup instance id). This keeps the implementation single-process.
+spent-ticket state is process-local and intentionally resets on restart. Tickets are signed by an
+unconfigurable random per-boot key, so a restart also invalidates every outstanding ticket. This keeps the implementation single-process.
 Ticket consumption is deliberately process-local; horizontal scaling would require shared atomic replay state.
 
 ## Testing
@@ -256,7 +256,7 @@ CI runs this too, in its own job, installing Playwright transiently.
 - `HEAD` isn't supported. A `402` challenge has to arrive in the response
   body, and HEAD responses have no body by definition — so HEAD could
   not deliver this protocol's challenge. Only `GET` is accepted.
-- Signed proof-of-work tickets are bound to a canonical path and query, but not to an IP address. Tickets expire, and a ticket consumed by an accepted operation is tracked in process memory to reject another use. Validation failures do not consume it. Tickets are bearer credentials, so another client can transfer and use one before it is consumed. A random startup instance id rejects tickets issued before restart.
+- Signed proof-of-work tickets are bound to a canonical path and query, but not to an IP address. Tickets expire, and a ticket consumed by an accepted operation is tracked in process memory to reject another use. Cheap validation happens before tickets are issued or checked. Tickets are bearer credentials, so another client can transfer and use one before it is consumed. A random per-boot signing key rejects tickets issued before restart and cannot be configured or shared.
 - A submitted ticket must carry at least the difficulty currently required for its endpoint. This prevents clients from stockpiling easy work before a rapid load increase, while still accepting tickets issued at a higher difficulty after load subsides.
 
 ## Simplicity and audit budget

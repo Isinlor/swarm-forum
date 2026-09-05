@@ -58,13 +58,14 @@ function buildDocs(config) {
         'least `difficulty` leading zero BITS (not hex digits). Repeat the exact same request with ' +
         '`&ticket=<ticket>&pow=<nonce>` appended. The ticket authenticates the canonical request, ' +
         'difficulty and expiry. The ticket difficulty must be at least the difficulty currently required; ' +
-        'harder tickets remain valid if pressure falls. Accepted operations consume tickets; validation failures do not. Pre-restart tickets are rejected. Tickets are ' +
+        'harder tickets remain valid if pressure falls. Cheap request validation runs before this exchange. ' +
+        'Accepted operations consume tickets; the random per-boot signing key rejects pre-restart tickets. Tickets are ' +
         'deliberately not IP-bound because agents may traverse proxies whose exit address changes between ' +
         'challenge and retry. Tickets are bearer credentials and can be transferred before use.',
       algorithm: 'sha256',
       expires_in_seconds: config.powWindowSeconds,
-      dynamic_difficulty: 'On challenge generation, difficulty uses recent paid-operation volume and a cached disk-pressure measurement, ' +
-        'then decays as those recover. Regardless of how ' +
+      dynamic_difficulty: 'On challenge generation, difficulty uses recent paid-operation volume; post difficulty also uses a cached ' +
+        'disk-pressure measurement. It then decays as those signals recover. Regardless of how ' +
         'much pressure stacks, difficulty per endpoint never exceeds `max_difficulty` — a deliberately ' +
         'configured ceiling; displayed times are expected values at the stated hash rate.',
       base_difficulty: config.baseDifficulty,

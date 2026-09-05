@@ -12,28 +12,27 @@ test('leadingZeroBits and meetsDifficulty count exact leading bits', () => {
   assert.equal(pow.leadingZeroBits('000f'), 12); assert.equal(pow.leadingZeroBits('8fff'), 0);
   assert.equal(pow.meetsDifficulty('x', 'n', 0), true);
 });
-test('signed tickets enforce request, difficulty, expiry, instance, and nonce', () => {
+test('signed tickets enforce request, difficulty, expiry, signing key, and nonce', () => {
   const params = new URLSearchParams('message=hi');
-  const issued = pow.issueTicket('secret', 'instance', '/post', params, 4, { now: 1000, lifetimeMs: 100 });
+  const issued = pow.issueTicket('secret', '/post', params, 4, { now: 1000, lifetimeMs: 100 });
   const nonce = solve(issued.ticket, issued.difficulty);
   assert.equal(issued.expires_at, 1100); assert.equal(issued.expires_in, 1);
-  assert.ok(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, nonce, { now: 1050 }));
-  assert.equal(pow.verifyTicket('wrong', 'instance', '/post', params, issued.ticket, nonce, { now: 1050 }), null);
-  assert.equal(pow.verifyTicket('secret', 'other', '/post', params, issued.ticket, nonce, { now: 1050 }), null);
-  assert.equal(pow.verifyTicket('secret', 'instance', '/post', new URLSearchParams('message=no'), issued.ticket, nonce, { now: 1050 }), null);
-  assert.equal(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, nonce, { now: 1100 }), null);
+  assert.ok(pow.verifyTicket('secret', '/post', params, issued.ticket, nonce, { now: 1050 }));
+  assert.equal(pow.verifyTicket('wrong', '/post', params, issued.ticket, nonce, { now: 1050 }), null);
+  assert.equal(pow.verifyTicket('secret', '/post', new URLSearchParams('message=no'), issued.ticket, nonce, { now: 1050 }), null);
+  assert.equal(pow.verifyTicket('secret', '/post', params, issued.ticket, nonce, { now: 1100 }), null);
   // Derive a failing nonce because at this intentionally cheap difficulty an
   // arbitrary value has a 1-in-16 chance of being a valid proof by accident.
   const invalidNonce = reject(issued.ticket, issued.difficulty);
-  assert.equal(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, invalidNonce, { now: 1050 }), null);
+  assert.equal(pow.verifyTicket('secret', '/post', params, issued.ticket, invalidNonce, { now: 1050 }), null);
 });
 test('tickets deliberately remain valid across network-source changes', () => {
   const params = new URLSearchParams('message=hi');
-  const issued = pow.issueTicket('secret', 'i', '/post', params, 0);
-  assert.ok(pow.verifyTicket('secret', 'i', '/post', params, issued.ticket, 'n'));
+  const issued = pow.issueTicket('secret', '/post', params, 0);
+  assert.ok(pow.verifyTicket('secret', '/post', params, issued.ticket, 'n'));
 });
 test('default ticket and consumed-id lifetime is ten minutes', () => {
-  const issued = pow.issueTicket('secret', 'i', '/', new URLSearchParams(), 0, { now: 1000 });
+  const issued = pow.issueTicket('secret', '/', new URLSearchParams(), 0, { now: 1000 });
   assert.equal(pow.TICKET_LIFETIME_MS, 600_000);
   assert.equal(issued.expires_at, 601_000);
   assert.equal(issued.expires_in, 600);
@@ -47,25 +46,25 @@ test('ticket store consumes each id once and prunes expired ids', () => {
   assert.equal(store.consume('d', 100), true); assert.equal(store.size, 1);
 });
 test('malformed tickets and nonces fail closed', () => {
-  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'bad', 'n'), null);
-  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'x.y', ''), null);
-  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'x'.repeat(1025), 'n'), null);
-  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), 'x.y', 3), null);
-  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), '.x', 'n'), null);
-  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), `x.${'é'.repeat(43)}`, 'n'), null);
-  assert.equal(pow.verifyTicket('s', 'i', '/', new URLSearchParams(), `x.${'a'.repeat(43)}.extra`, 'n'), null);
+  assert.equal(pow.verifyTicket('s', '/', new URLSearchParams(), 'bad', 'n'), null);
+  assert.equal(pow.verifyTicket('s', '/', new URLSearchParams(), 'x.y', ''), null);
+  assert.equal(pow.verifyTicket('s', '/', new URLSearchParams(), 'x'.repeat(1025), 'n'), null);
+  assert.equal(pow.verifyTicket('s', '/', new URLSearchParams(), 'x.y', 3), null);
+  assert.equal(pow.verifyTicket('s', '/', new URLSearchParams(), '.x', 'n'), null);
+  assert.equal(pow.verifyTicket('s', '/', new URLSearchParams(), `x.${'é'.repeat(43)}`, 'n'), null);
+  assert.equal(pow.verifyTicket('s', '/', new URLSearchParams(), `x.${'a'.repeat(43)}.extra`, 'n'), null);
 });
 
 test('every malformed signed ticket contract fails closed', () => {
   const crypto = require('node:crypto'); const params = new URLSearchParams();
   function signed(payload) { const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url'); return encoded + '.' + crypto.createHmac('sha256', 's').update(encoded).digest('base64url'); }
   const r = crypto.createHash('sha256').update('/').digest('base64url');
-  const good = { r, d: 0, e: Date.now() + 10000, j: 'id', i: 'i' };
+  const good = { r, d: 0, e: Date.now() + 10000, j: 'id' };
   for (const bad of [null, { ...good, d: 1.5 }, { ...good, d: -1 }, { ...good, d: 257 },
     { ...good, e: 'later' }, { ...good, j: 3 }])
-    assert.equal(pow.verifyTicket('s', 'i', '/', params, signed(bad), 'n'), null);
+    assert.equal(pow.verifyTicket('s', '/', params, signed(bad), 'n'), null);
   const encoded = Buffer.from('{').toString('base64url'); const malformed = encoded + '.' + crypto.createHmac('sha256', 's').update(encoded).digest('base64url');
-  assert.equal(pow.verifyTicket('s', 'i', '/', params, malformed, 'n'), null);
-  assert.equal(pow.verifyTicket('s', 'i', '/', params, signed(good) + 'extra', 'n'), null);
-  assert.equal(pow.verifyTicket('s', 'i', '/', params, signed(good), 'x'.repeat(129)), null);
+  assert.equal(pow.verifyTicket('s', '/', params, malformed, 'n'), null);
+  assert.equal(pow.verifyTicket('s', '/', params, signed(good) + 'extra', 'n'), null);
+  assert.equal(pow.verifyTicket('s', '/', params, signed(good), 'x'.repeat(129)), null);
 });

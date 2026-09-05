@@ -18,6 +18,7 @@ test('loadConfig applies overrides and reads env', () => {
   assert.equal(fromEnv.maxMessageBytes, 500);
 
   const defaultDataDir = loadConfig({ env: {} });
+  assert.equal(defaultDataDir.powSecret, undefined);
   assert.equal(defaultDataDir.dataDir, path.join(process.cwd(), 'data'));
   assert.equal(defaultDataDir.posterSecret, null);
   assert.equal(defaultDataDir.clientIpHops, 0);
@@ -69,7 +70,6 @@ test('start() boots a listening server from defaults, reachable over HTTP', asyn
     host: '127.0.0.1',
     dataDir,
     dbFile: path.join(dataDir, 'db.sqlite'),
-    powSecret: 'start-test',
     posterSecret: 'start-test-poster',
     baseDifficulty: { search: 1, post: 1 },
   });
@@ -88,7 +88,7 @@ test('a poster secret is generated and persisted across restarts when not provid
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-poster-secret-'));
   try {
     const s1 = createServer({
-      dataDir, dbFile: path.join(dataDir, 'db.sqlite'), port: 0, powSecret: 'x',
+      dataDir, dbFile: path.join(dataDir, 'db.sqlite'), port: 0,
       baseDifficulty: { search: 1, post: 1 }, maxDifficulty: { search: 10, post: 10 },
     });
     await new Promise((resolve) => s1.listen(0, '127.0.0.1', resolve));
@@ -102,7 +102,7 @@ test('a poster secret is generated and persisted across restarts when not provid
     assert.equal(fs.statSync(secretFile).mode & 0o777, 0o600);
 
     const s2 = createServer({
-      dataDir, dbFile: path.join(dataDir, 'db.sqlite'), port: 0, powSecret: 'x',
+      dataDir, dbFile: path.join(dataDir, 'db.sqlite'), port: 0,
       baseDifficulty: { search: 1, post: 1 }, maxDifficulty: { search: 10, post: 10 },
     });
     await new Promise((resolve) => s2.listen(0, '127.0.0.1', resolve));
@@ -120,7 +120,7 @@ test('a poster secret is generated and persisted across restarts when not provid
 test('a populated database cannot silently replace a missing managed poster secret', () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-missing-poster-secret-'));
   const options = {
-    dataDir, dbFile: path.join(dataDir, 'db.sqlite'), port: 0, powSecret: 'x',
+    dataDir, dbFile: path.join(dataDir, 'db.sqlite'), port: 0,
     baseDifficulty: { search: 1, post: 1 }, maxDifficulty: { search: 10, post: 10 },
   };
   try {
@@ -255,7 +255,7 @@ test('a malformed request target yields 400 instead of crashing the server', asy
   }
 });
 
-test('POST /post without proof-of-work is challenged with 402, before any validation runs', async () => {
+test('POST /post validates cheaply before issuing a proof-of-work challenge', async () => {
   const ctx = await startTestServer();
   try {
     const res = await fetch(ctx.base + '/post?message=hello');
@@ -266,10 +266,9 @@ test('POST /post without proof-of-work is challenged with 402, before any valida
     assert.equal(typeof body.difficulty, 'number');
     assert.equal(body.expires_in, 600);
 
-    // Even a request with no `message` at all is gated first: nothing
-    // about the request's validity is inspected before payment.
+    // Invalid input costs neither side proof-of-work and never reaches storage.
     const missing = await fetch(ctx.base + '/post');
-    assert.equal(missing.status, 402);
+    assert.equal(missing.status, 400);
   } finally {
     await ctx.close();
   }
@@ -310,6 +309,24 @@ test('a malformed PoW signature is challenged without logging an internal error'
   }
 });
 
+test('the unconfigurable per-boot signing key rejects another server\'s ticket', async () => {
+  // Supplying the same obsolete option to both servers proves it cannot turn
+  // the boot key into shared configuration.
+  const first = await startTestServer({ powSecret: 'shared' });
+  const second = await startTestServer({ powSecret: 'shared' });
+  try {
+    const path = '/search?q=boot-key';
+    const challenge = await (await fetch(first.base + path)).json();
+    const nonce = solvePow(challenge.ticket, challenge.difficulty);
+    const res = await fetch(`${second.base}${path}&ticket=${encodeURIComponent(challenge.ticket)}&pow=${nonce}`);
+    assert.equal(res.status, 402);
+    assert.notEqual((await res.json()).ticket, challenge.ticket);
+  } finally {
+    await first.close();
+    await second.close();
+  }
+});
+
 test('tickets must meet current difficulty, while harder tickets remain valid', async () => {
   const ctx = await startTestServer({
     baseDifficulty: { search: 1, post: 1 },
@@ -336,7 +353,7 @@ test('tickets must meet current difficulty, while harder tickets remain valid', 
   }
 });
 
-test('posting requires message and enforces the byte limit (checked after proof-of-work)', async () => {
+test('posting requires message and enforces the byte limit before proof-of-work', async () => {
   const ctx = await startTestServer();
   try {
     const missing = await powFetch(ctx.base, '/post');
@@ -436,15 +453,15 @@ test('a padded uppercase UUID query is canonicalized before the direct id lookup
   }
 });
 
-test('poster filters and lists work as their own query parameter, gated before validation', async () => {
+test('poster filters and lists work as their own query parameter, validated before gating', async () => {
   const ctx = await startTestServer();
   try {
     const posted = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'poster query test' }));
     const { message } = await posted.json();
 
-    // An invalid poster is still gated first, not surfaced for free.
+    // Cheap syntax errors are returned without making clients solve work.
     const invalidPosterNoPow = await fetch(ctx.base + '/search?' + new URLSearchParams({ poster: 'not-a-hash' }));
-    assert.equal(invalidPosterNoPow.status, 402);
+    assert.equal(invalidPosterNoPow.status, 400);
     const invalidPoster = await powFetch(ctx.base, '/search?' + new URLSearchParams({ poster: 'not-a-hash' }));
     assert.equal(invalidPoster.status, 400);
 

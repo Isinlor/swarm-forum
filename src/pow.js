@@ -35,14 +35,13 @@ function signature(secret, encoded) {
   return crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
 }
 
-function issueTicket(secret, instanceId, pathname, searchParams, difficulty, options = {}) {
+function issueTicket(secret, pathname, searchParams, difficulty, options = {}) {
   const now = options.now ?? Date.now();
   const payload = {
     r: crypto.createHash('sha256').update(canonicalRequest(pathname, searchParams)).digest('base64url'),
     d: difficulty,
     e: now + (options.lifetimeMs ?? TICKET_LIFETIME_MS),
     j: crypto.randomBytes(16).toString('base64url'),
-    i: instanceId,
   };
   const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const ticket = `${encoded}.${signature(secret, encoded)}`;
@@ -67,20 +66,20 @@ function authenticateTicket(secret, ticket) {
   return payload && typeof payload.j === 'string' ? payload : null;
 }
 
-function verifyAuthenticatedTicket(instanceId, pathname, searchParams, ticket, nonce, payload, options = {}) {
+function verifyAuthenticatedTicket(pathname, searchParams, ticket, nonce, payload, options = {}) {
   if (!payload || typeof nonce !== 'string' || nonce.length === 0 || nonce.length > 128) return null;
   const now = options.now ?? Date.now();
   const requestHash = crypto.createHash('sha256')
     .update(canonicalRequest(pathname, searchParams)).digest('base64url');
-  if (!payload || payload.i !== instanceId || payload.r !== requestHash ||
+  if (!payload || payload.r !== requestHash ||
       !Number.isInteger(payload.d) || payload.d < 0 || payload.d > 256 ||
       !Number.isFinite(payload.e) || payload.e <= now || typeof payload.j !== 'string' ||
       !meetsDifficulty(ticket, nonce, payload.d)) return null;
   return payload;
 }
 
-function verifyTicket(secret, instanceId, pathname, searchParams, ticket, nonce, options = {}) {
-  return verifyAuthenticatedTicket(instanceId, pathname, searchParams, ticket, nonce,
+function verifyTicket(secret, pathname, searchParams, ticket, nonce, options = {}) {
+  return verifyAuthenticatedTicket(pathname, searchParams, ticket, nonce,
     authenticateTicket(secret, ticket), options);
 }
 

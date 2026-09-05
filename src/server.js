@@ -55,12 +55,8 @@ function loadConfig(overrides = {}) {
     host: overrides.host || env.HOST || '0.0.0.0',
     dataDir,
     dbFile: overrides.dbFile || path.join(dataDir, 'swarm-forum.db'),
-    powSecret: overrides.powSecret || env.POW_SECRET || crypto.randomBytes(32).toString('hex'),
-    // Unlike powSecret, this has no in-process fallback: it must survive
-    // restarts (rotating it changes poster hashes on future posts), so
-    // when it isn't explicitly provided, createServer loads or creates a
-    // persisted one from disk (see secret.js) rather than generating a
-    // fresh, unpersisted one here.
+    // The poster secret must survive restarts (rotating it changes poster
+    // hashes), so it is persisted rather than sharing the boot-only ticket key.
     posterSecret: overrides.posterSecret || env.POSTER_SECRET || null,
     clientIpHeader: overrides.clientIpHeader ?? env.CLIENT_IP_HEADER ?? 'x-forwarded-for',
     clientIpHops: num('clientIpHops', num('CLIENT_IP_HOPS', 0)),
@@ -191,7 +187,9 @@ function createServer(overrides = {}) {
     post: config.targetPostRequestsPerSecond,
   };
   const postRateLimiter = createPerSecondLimiter(config.maxPostsPerSecond);
-  const instanceId = crypto.randomBytes(16).toString('base64url');
+  // One unconfigurable per-boot key both signs tickets and invalidates them
+  // after restart; a separate instance identifier would duplicate that job.
+  const signingSecret = crypto.randomBytes(32);
   const tickets = pow.createTicketStore(config.powWindowSeconds * 1000);
 
   const computeDiskState = memoize(() => resources.currentState({
@@ -224,17 +222,17 @@ function createServer(overrides = {}) {
       docs: docs(), latest: snapshot.messages, updatedAt: snapshot.updatedAt,
     }),
   });
-  const computeState = (endpoint) => ({ ...computeDiskState(),
-    loadRatio: rateTrackers[endpoint].ratePerSecond() / rateTargets[endpoint] });
+  const computeState = (endpoint) => endpoint === 'post'
+    ? { ...computeDiskState(), loadRatio: rateTrackers.post.ratePerSecond() / rateTargets.post }
+    : { loadRatio: rateTrackers.search.ratePerSecond() / rateTargets.search };
   const difficulty = resources.createDifficultyController((endpoint) =>
     resources.computeDifficulty(endpoint, computeState(endpoint), config.baseDifficulty, config.maxDifficulty));
 
-  /** Verifies payment before request validation or database access.
-   * Posting may perform its cached capacity check first. */
+  /** Verifies payment after cheap request validation but before database access. */
   function gate(req, res, url, endpoint) {
     const now = Date.now();
     const ticket = url.searchParams.get('ticket');
-    const authenticated = pow.authenticateTicket(config.powSecret, ticket);
+    const authenticated = pow.authenticateTicket(signingSecret, ticket);
     // Authentication makes the id trustworthy; checking replay here avoids
     // request hashing and attacker-selected proof verification for spent work.
     if (authenticated && tickets.has(authenticated.j)) {
@@ -242,14 +240,14 @@ function createServer(overrides = {}) {
       return null;
     }
     const nonce = url.searchParams.get('pow');
-    const verified = pow.verifyAuthenticatedTicket(instanceId, url.pathname, url.searchParams,
+    const verified = pow.verifyAuthenticatedTicket(url.pathname, url.searchParams,
       ticket, nonce, authenticated, { now });
     const difficultyValue = difficulty.get(endpoint, now);
     // A signed ticket proves what difficulty was advertised, but an old easy
     // ticket must not become a way to bypass a load-driven increase. Tickets
     // from a harder period remain valid when pressure falls.
     if (verified && verified.d >= difficultyValue) return verified;
-    const challenge = pow.issueTicket(config.powSecret, instanceId, url.pathname, url.searchParams,
+    const challenge = pow.issueTicket(signingSecret, url.pathname, url.searchParams,
       difficultyValue, { now, lifetimeMs: config.powWindowSeconds * 1000 });
     sendJson(res, 402, { error: 'proof_of_work_required', ...challenge });
     return null;
@@ -272,15 +270,6 @@ function createServer(overrides = {}) {
   }
 
   function handlePost(req, res, url) {
-    // A cheap, cached read — refusing outright when the board is over
-    // capacity costs nothing worth gating, so it can run ahead of gate().
-    if (resources.isOverCapacity(computeDiskState())) {
-      sendJson(res, 507, { error: 'insufficient_storage', detail: 'the board is at capacity; try again later' });
-      return;
-    }
-    const paid = gate(req, res, url, 'post');
-    if (!paid) return;
-
     const message = url.searchParams.get('message');
     if (!message) {
       sendJson(res, 400, { error: 'bad_request', detail: 'message is required' });
@@ -290,6 +279,15 @@ function createServer(overrides = {}) {
       sendJson(res, 400, { error: 'bad_request', detail: `message exceeds ${config.maxMessageBytes} bytes` });
       return;
     }
+    // A cheap, cached read — refusing outright when the board is over
+    // capacity costs nothing worth gating, so it can run ahead of gate().
+    if (resources.isOverCapacity(computeDiskState())) {
+      sendJson(res, 507, { error: 'insufficient_storage', detail: 'the board is at capacity; try again later' });
+      return;
+    }
+    const paid = gate(req, res, url, 'post');
+    if (!paid) return;
+
     let finalState;
     try { finalState = resources.currentState({ dataDir: path.dirname(config.dbFile),
       minFreeBytes: config.minFreeBytes }); }
@@ -310,9 +308,6 @@ function createServer(overrides = {}) {
   }
 
   function handleSearch(req, res, url) {
-    const paid = gate(req, res, url, 'search');
-    if (!paid) return;
-
     const rawQ = url.searchParams.get('q');
     let q = rawQ ? rawQ.trim() : null;
     let poster = url.searchParams.get('poster');
@@ -346,6 +341,9 @@ function createServer(overrides = {}) {
       sendJson(res, 400, { error: 'bad_request', detail: `q exceeds ${config.maxQueryLength} characters` });
       return;
     }
+
+    const paid = gate(req, res, url, 'search');
+    if (!paid) return;
 
     consume('search', paid);
     let results;
@@ -414,7 +412,7 @@ function createServer(overrides = {}) {
     }
   });
 
-  server.swarmForum = { config, db, cache, computeState, tickets, instanceId, postRateLimiter };
+  server.swarmForum = { config, db, cache, computeState, tickets, postRateLimiter };
   server.on('close', () => {
     cache.stop();
     db.close();

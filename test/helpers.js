@@ -50,7 +50,6 @@ async function startTestServer(overrides = {}) {
     dataDir,
     dbFile: path.join(dataDir, 'db.sqlite'),
     port: 0,
-    powSecret: 'test-secret',
     posterSecret: 'test-poster-secret',
     cacheIntervalMs: 60_000,
     // Tiny difficulty: production values (14-21+ bits) are exercised in
