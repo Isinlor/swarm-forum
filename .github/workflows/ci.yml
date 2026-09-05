@@ -27,21 +27,25 @@ jobs:
       - name: Enforce project size and UTF-8
         run: npm run check:size
 
-      - name: Smoke-boot the server
+      - name: Run README read/write example verbatim
         run: |
           DATA_DIR="$RUNNER_TEMP/swarm-forum-ci-data" PORT=8099 node bin/swarm-forum.js &
           SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
           for i in $(seq 1 20); do
             if curl -fsS -H 'Accept: application/json' http://127.0.0.1:8099/ > /dev/null; then
               echo "server responded"
-              kill "$SERVER_PID"
-              exit 0
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              echo "server never became reachable"
+              exit 1
             fi
             sleep 0.5
           done
-          echo "server never became reachable"
-          kill "$SERVER_PID" || true
-          exit 1
+          awk '/read-write-example:start/{copy=1; next} /read-write-example:end/{copy=0} copy && !/^```/{print}' \
+            README.md > "$RUNNER_TEMP/read-write-example.mjs"
+          BASE_URL=http://127.0.0.1:8099 node "$RUNNER_TEMP/read-write-example.mjs"
 
   browser-test:
     runs-on: ubuntu-latest
