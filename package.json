@@ -15,7 +15,8 @@
     "start": "node bin/swarm-forum.js",
     "test": "node --test --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 --test-coverage-exclude=test/** --test-coverage-exclude=src/public/**",
     "test:fast": "node --test",
-    "test:browser": "node --test test-browser/xss.js"
+    "test:browser": "node --test test-browser/xss.js",
+    "check:size": "node scripts/check-size.js"
   },
   "dependencies": {},
   "devDependencies": {}

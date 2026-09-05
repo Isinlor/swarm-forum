@@ -17,12 +17,12 @@ function leadingZeroBits(hex) {
 }
 
 self.onmessage = function (e) {
-  var challenge = e.data.challenge;
+  var ticket = e.data.ticket;
   var difficulty = e.data.difficulty;
   var nonce = 0;
   for (;;) {
     var candidate = String(nonce);
-    var digest = sha256Hex(challenge + ':' + candidate);
+    var digest = sha256Hex(ticket + ':' + candidate);
     if (leadingZeroBits(digest) >= difficulty) {
       postMessage({ nonce: candidate });
       return;

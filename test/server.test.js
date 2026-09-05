@@ -6,13 +6,12 @@ const net = require('node:net');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { loadConfig, start, createServer, createDifficultyTracker } = require('../src/server');
+const { loadConfig, start, createServer } = require('../src/server');
 const { startTestServer, powFetch, solvePow } = require('./helpers');
 
-test('loadConfig applies overrides, falls back on invalid numbers, and reads env', () => {
-  const cfg = loadConfig({ port: 1234, maxMessageBytes: 'not-a-number', env: {} });
+test('loadConfig applies overrides and reads env', () => {
+  const cfg = loadConfig({ port: 1234, env: {} });
   assert.equal(cfg.port, 1234);
-  assert.equal(cfg.maxMessageBytes, 2048); // fallback default
 
   const fromEnv = loadConfig({ env: { PORT: '9999', MAX_MESSAGE_BYTES: '500' } });
   assert.equal(fromEnv.port, 9999);
@@ -21,7 +20,7 @@ test('loadConfig applies overrides, falls back on invalid numbers, and reads env
   const defaultDataDir = loadConfig({ env: {} });
   assert.equal(defaultDataDir.dataDir, path.join(process.cwd(), 'data'));
   assert.equal(defaultDataDir.posterSecret, null);
-  assert.equal(defaultDataDir.trustProxyHops, 0);
+  assert.equal(defaultDataDir.clientIpHops, 1);
   assert.equal(defaultDataDir.resultLimit, 100);
 
   const defaultBaseDifficulty = loadConfig({ env: {} });
@@ -31,13 +30,15 @@ test('loadConfig applies overrides, falls back on invalid numbers, and reads env
   const envOverrides = loadConfig({ env: {
     BASE_DIFFICULTY_POST: '30',
     MAX_DIFFICULTY_POST: '40',
-    TRUST_PROXY_HOPS: '2',
+    CLIENT_IP_HEADER: 'x-real-ip',
+    CLIENT_IP_HOPS: '2',
     POSTER_SECRET: 'from-env',
     RESULT_LIMIT: '50',
   } });
   assert.equal(envOverrides.baseDifficulty.post, 30);
   assert.equal(envOverrides.maxDifficulty.post, 40);
-  assert.equal(envOverrides.trustProxyHops, 2);
+  assert.equal(envOverrides.clientIpHops, 2);
+  assert.equal(envOverrides.clientIpHeader, 'x-real-ip');
   assert.equal(envOverrides.posterSecret, 'from-env');
   assert.equal(envOverrides.resultLimit, 50);
 
@@ -127,7 +128,7 @@ test('GET / defaults to JSON (agents), and serves HTML only when explicitly requ
   }
 });
 
-test('/post and /search responses are never cached; static assets are', async () => {
+test('/post and /search responses are never cached; static assets revalidate', async () => {
   const ctx = await startTestServer();
   try {
     const post402 = await fetch(ctx.base + '/post?message=hi');
@@ -140,7 +141,9 @@ test('/post and /search responses are never cached; static assets are', async ()
       const res = await fetch(ctx.base + file);
       assert.equal(res.status, 200);
       assert.match(res.headers.get('content-type'), /javascript/);
-      assert.match(res.headers.get('cache-control'), /public/);
+      assert.equal(res.headers.get('cache-control'), 'no-cache');
+      const cached = await fetch(ctx.base + file, { headers: { 'If-None-Match': res.headers.get('etag') } });
+      assert.equal(cached.status, 304);
     }
   } finally {
     await ctx.close();
@@ -173,53 +176,6 @@ test('unknown paths return 404, including the removed /export endpoint', async (
   } finally {
     await ctx.close();
   }
-});
-
-test('the per-slot difficulty tracker evicts its oldest entry once it grows past its cap', async () => {
-  const ctx = await startTestServer();
-  try {
-    const { difficulty } = ctx.server.swarmForum;
-    for (let slot = 0; slot < 70; slot += 1) {
-      const value = difficulty.issue('search', slot);
-      assert.equal(typeof value, 'number');
-    }
-  } finally {
-    await ctx.close();
-  }
-});
-
-test('createDifficultyTracker issues a fresh value on every call, but verifies against the lowest one it ever advertised for a slot', () => {
-  let pressure = 0;
-  const baseDifficulty = { search: 10 };
-  const maxDifficulty = { search: 30 };
-  const computeState = () => ({ loadRatio: pressure, dbUsageRatio: 0, diskPressureRatio: 0 });
-  const tracker = createDifficultyTracker(computeState, baseDifficulty, maxDifficulty);
-
-  // Idle, then a load spike, then idle again — each issue() call reflects
-  // whatever computeState says *right now*, not a value cached for the
-  // whole slot.
-  const idle = tracker.issue('search', 1);
-  pressure = 5; // well past extraBits' threshold, so difficulty rises
-  const spiked = tracker.issue('search', 1);
-  pressure = 0;
-  const idleAgain = tracker.issue('search', 1);
-  assert.ok(spiked > idle);
-  assert.equal(idleAgain, idle);
-
-  // A nonce solved against the easy, idle value must still verify even
-  // though a harder value was advertised to someone else in the same
-  // slot afterward — verification uses the slot's minimum, not the
-  // latest or first-seen value.
-  assert.equal(tracker.verify('search', 1), idle);
-});
-
-test('createDifficultyTracker.verify computes and records a fresh value for a slot nothing has issued against yet', () => {
-  let pressure = 0;
-  const computeState = () => ({ loadRatio: pressure, dbUsageRatio: 0, diskPressureRatio: 0 });
-  const tracker = createDifficultyTracker(computeState, { search: 12 }, { search: 30 });
-  assert.equal(tracker.verify('search', 99), 12);
-  pressure = 5; // if verify() recomputed instead of reading back the record, this would change
-  assert.equal(tracker.verify('search', 99), 12);
 });
 
 test('a request sent without an Accept or Host header still resolves via the URL fallback, defaulting to JSON', async () => {
@@ -268,7 +224,7 @@ test('POST /post without proof-of-work is challenged with 402, before any valida
     assert.equal(res.status, 402);
     const body = await res.json();
     assert.equal(body.error, 'proof_of_work_required');
-    assert.equal(typeof body.challenge, 'string');
+    assert.equal(typeof body.ticket, 'string');
     assert.equal(typeof body.difficulty, 'number');
 
     // Even a request with no `message` at all is gated first: nothing
@@ -287,7 +243,7 @@ test('an invalid pow nonce is rejected and a fresh challenge is reissued', async
   // default (a handful of bits, tuned for fast legitimate solving
   // elsewhere) leaves a real few-percent chance that "not-a-real-nonce"
   // coincidentally meets it for whatever slot happens to be current.
-  const ctx = await startTestServer({ baseDifficulty: { search: 4, post: 32 } });
+  const ctx = await startTestServer({ baseDifficulty: { search: 4, post: 32 }, maxDifficulty: { search: 18, post: 32 } });
   try {
     const res = await fetch(ctx.base + '/post?message=hello&pow=not-a-real-nonce');
     assert.equal(res.status, 402);
@@ -339,28 +295,6 @@ test('an oversized raw query string is rejected by the belt check even if `messa
     const res = await powFetch(ctx.base, '/post?' + params.toString());
     assert.equal(res.status, 400);
     assert.match((await res.json()).detail, /too large/);
-  } finally {
-    await ctx.close();
-  }
-});
-
-test('reposting the exact same text within the proof-of-work window is rejected as a duplicate, without leaking that for free', async () => {
-  const ctx = await startTestServer();
-  try {
-    const first = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'repeat me' }));
-    assert.equal(first.status, 201);
-
-    // Unsolved: the duplicate check runs after gate(), so a repost with
-    // no proof gets the ordinary 402 — not a free "yes, that exists".
-    const unsolved = await fetch(ctx.base + '/post?' + new URLSearchParams({ message: 'repeat me' }));
-    assert.equal(unsolved.status, 402);
-
-    const second = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'repeat me' }));
-    assert.equal(second.status, 409);
-    assert.equal((await second.json()).error, 'duplicate_message');
-
-    const different = await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'not a repeat' }));
-    assert.equal(different.status, 201);
   } finally {
     await ctx.close();
   }
@@ -591,9 +525,9 @@ test('posting is refused once free disk space drops below the configured floor',
   }
 });
 
-test('X-Forwarded-For changes the poster hash only when TRUST_PROXY_HOPS says to trust it', async () => {
-  const direct = await startTestServer();
-  const proxied = await startTestServer({ trustProxyHops: 1 });
+test('the configured trusted client-IP header changes the poster source', async () => {
+  const direct = await startTestServer({ clientIpHeader: 'x-real-ip' });
+  const proxied = await startTestServer({ clientIpHeader: 'x-forwarded-for', clientIpHops: 1 });
   try {
     const directRes = await powFetch(direct.base, '/post?' + new URLSearchParams({ message: 'direct' }), {
       headers: { 'X-Forwarded-For': '203.0.113.5' },
@@ -604,7 +538,7 @@ test('X-Forwarded-For changes the poster hash only when TRUST_PROXY_HOPS says to
       headers: { 'X-Forwarded-For': '203.0.113.99' },
     });
     const ignoredPoster = (await ignoredRes.json()).message.poster;
-    assert.equal(directPoster, ignoredPoster); // trustProxyHops=0: header ignored either way
+    assert.equal(directPoster, ignoredPoster); // header differs but direct socket is used when no configured header
 
     const proxiedRes = await powFetch(proxied.base, '/post?' + new URLSearchParams({ message: 'via proxy' }), {
       headers: { 'X-Forwarded-For': '203.0.113.5' },
@@ -624,8 +558,8 @@ test('an unexpected internal error is reported as 500 rather than crashing the s
     const challenge = await fetch(ctx.base + '/search?q=hi');
     assert.equal(challenge.status, 402);
     const body = await challenge.json();
-    const nonce = solvePow(body.challenge, body.difficulty);
-    const res = await fetch(`${ctx.base}/search?q=hi&pow=${nonce}`);
+    const nonce = solvePow(body.ticket, body.difficulty);
+    const res = await fetch(`${ctx.base}/search?q=hi&ticket=${encodeURIComponent(body.ticket)}&pow=${nonce}`);
     assert.equal(res.status, 500);
     const errBody = await res.json();
     assert.equal(errBody.error, 'internal_error');
@@ -635,4 +569,59 @@ test('an unexpected internal error is reported as 500 rather than crashing the s
     ctx.server.swarmForum.db.close = () => {};
     await ctx.close();
   }
+});
+
+test('configuration and Accept quality values are validated strictly', () => {
+  const { wantsHtml } = require('../src/server');
+  for (const overrides of [
+    { maxMessageBytes: 0 }, { maxDbSizeBytes: -1 }, { clientIpHops: 0 }, { clientIpHops: 1.5 },
+    { clientIpHeader: 'bad header' }, { baseDifficulty: { search: -1, post: 1 } },
+    { maxDifficulty: { search: 257, post: 21 } }, { env: { PORT: 'nope' } },
+  ]) assert.throws(() => loadConfig(overrides));
+  assert.equal(wantsHtml({ headers: { accept: 'text/html;q=0, application/json' } }), false);
+  assert.equal(wantsHtml({ headers: { accept: 'text/html; q=0.5' } }), true);
+  assert.equal(wantsHtml({ headers: { accept: 'text/html;q=nonsense' } }), false);
+  assert.equal(wantsHtml({ headers: { accept: 'text/html;level=1;q=2' } }), true);
+  assert.equal(wantsHtml({ headers: { accept: 'text/html;q=-1' } }), false);
+});
+
+test('a successful ticket is single-use', async () => {
+  const ctx = await startTestServer();
+  try {
+    const first = await fetch(ctx.base + '/search?q=once'); const body = await first.json();
+    const nonce = solvePow(body.ticket, body.difficulty);
+    const paid = `${ctx.base}/search?q=once&ticket=${encodeURIComponent(body.ticket)}&pow=${nonce}`;
+    assert.equal((await fetch(paid)).status, 200);
+    const replay = await fetch(paid); assert.equal(replay.status, 409);
+    assert.equal((await replay.json()).error, 'ticket_already_used');
+  } finally { await ctx.close(); }
+});
+
+test('post rechecks capacity after payment and post tickets cannot be replayed', async () => {
+  const ctx = await startTestServer();
+  try {
+    const challenge = await fetch(ctx.base + '/post?message=once'); const body = await challenge.json();
+    const nonce = solvePow(body.ticket, body.difficulty);
+    const paid = `${ctx.base}/post?message=once&ticket=${encodeURIComponent(body.ticket)}&pow=${nonce}`;
+    assert.equal((await fetch(paid)).status, 201);
+    assert.equal((await fetch(paid)).status, 409);
+
+    const next = await fetch(ctx.base + '/post?message=full'); const nextBody = await next.json();
+    const nextNonce = solvePow(nextBody.ticket, nextBody.difficulty);
+    ctx.server.swarmForum.config.maxDbSizeBytes = 1;
+    const full = await fetch(`${ctx.base}/post?message=full&ticket=${encodeURIComponent(nextBody.ticket)}&pow=${nextNonce}`);
+    assert.equal(full.status, 507);
+  } finally { await ctx.close(); }
+});
+
+test('a paid post fails closed when its final capacity measurement fails', async () => {
+  const ctx = await startTestServer();
+  try {
+    const original = ctx.server.swarmForum.db.fileSizeBytes;
+    let calls = 0; ctx.server.swarmForum.db.fileSizeBytes = () => { calls += 1; if (calls > 1) throw new Error('stat failed'); return original(); };
+    // Prime the memoized approximate state, then make only the mandatory final reading fail.
+    ctx.server.swarmForum.computeState();
+    const res = await powFetch(ctx.base, '/post?message=capacity-check');
+    assert.equal(res.status, 507); assert.equal((await res.json()).error, 'insufficient_storage');
+  } finally { await ctx.close(); }
 });

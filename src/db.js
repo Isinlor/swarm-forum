@@ -2,7 +2,6 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { timestampFromUuidv7 } = require('./uuid');
 
@@ -10,11 +9,9 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     body TEXT NOT NULL,
-    body_hash TEXT NOT NULL,
     poster TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_messages_poster ON messages(poster, id);
-  CREATE INDEX IF NOT EXISTS idx_messages_body_hash ON messages(body_hash, id);
   CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     body,
     poster,
@@ -26,10 +23,6 @@ const SCHEMA = `
     INSERT INTO messages_fts(rowid, body, poster) VALUES (new.rowid, new.body, new.poster);
   END;
 `;
-
-function hashBody(body) {
-  return crypto.createHash('sha256').update(body).digest('hex');
-}
 
 /** Builds the FTS5 MATCH expression `search()` runs, exposed so tests can
  * run `EXPLAIN QUERY PLAN` against precisely what production executes. */
@@ -93,10 +86,19 @@ function openDb(filePath) {
   // doesn't apply here, since nothing in this design copies that file.
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA synchronous = NORMAL');
+  const columns = db.prepare("SELECT name FROM pragma_table_info('messages')").all();
+  if (columns.some((column) => column.name === 'body_hash')) {
+    db.exec(`
+      DROP TRIGGER IF EXISTS messages_ai;
+      DROP TABLE IF EXISTS messages_fts;
+      DROP INDEX IF EXISTS idx_messages_body_hash;
+      ALTER TABLE messages DROP COLUMN body_hash;
+    `);
+  }
   db.exec(SCHEMA);
 
   const stmts = {
-    insert: db.prepare('INSERT INTO messages (id, body, body_hash, poster) VALUES (?, ?, ?, ?)'),
+    insert: db.prepare('INSERT INTO messages (id, body, poster) VALUES (?, ?, ?)'),
     getById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     walk: db.prepare(SQL.walk),
     walkBefore: db.prepare(SQL.walkBefore),
@@ -104,9 +106,6 @@ function openDb(filePath) {
     listByPosterBefore: db.prepare(SQL.listByPosterBefore),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages'),
     search: db.prepare(SQL.search),
-    recentDuplicate: db.prepare(
-      'SELECT 1 FROM messages WHERE body_hash = ? AND id > ? LIMIT 1',
-    ),
   };
 
   return {
@@ -114,7 +113,7 @@ function openDb(filePath) {
     filePath,
 
     insertMessage({ id, message, poster }) {
-      stmts.insert.run(id, message, hashBody(message), poster);
+      stmts.insert.run(id, message, poster);
       return { id, message, poster };
     },
 
@@ -148,15 +147,6 @@ function openDb(filePath) {
       return stmts.count.get().n;
     },
 
-    /** True if the exact same text was already posted at or after
-     * `sinceId` (a uuidv7 lower bound, see uuid.js) — via a hash of the
-     * body rather than the body itself, so duplicate detection doesn't
-     * cost a second on-disk copy of every message. This is what rejects
-     * proof-of-work replay, in place of tracking spent nonces server-side. */
-    recentDuplicate(body, sinceId) {
-      return stmts.recentDuplicate.get(hashBody(body), sinceId) !== undefined;
-    },
-
     /**
      * Direct id lookup and poster lookup both hit indexed columns
      * (PRIMARY KEY / idx_messages_poster), i.e. O(log n) per row found.
@@ -179,8 +169,8 @@ function openDb(filePath) {
       for (const suffix of ['', '-wal', '-shm']) {
         try {
           total += fs.statSync(filePath + suffix).size;
-        } catch {
-          // that file doesn't exist (yet, or anymore) — contributes 0
+        } catch (err) {
+          if (err.code !== 'ENOENT' || suffix === '') throw err;
         }
       }
       return total;

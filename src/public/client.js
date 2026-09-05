@@ -75,14 +75,14 @@ function messageRowNode(doc, message) {
 }
 
 function initBrowser(doc, win) {
-  function solvePow(challenge, difficulty) {
+  function solvePow(ticket, difficulty) {
     return new Promise(function (resolve) {
       var worker = new win.Worker('/pow-worker.js');
       worker.onmessage = function (e) {
         worker.terminate();
         resolve(e.data.nonce);
       };
-      worker.postMessage({ challenge: challenge, difficulty: difficulty });
+      worker.postMessage({ ticket: ticket, difficulty: difficulty });
     });
   }
 
@@ -92,9 +92,10 @@ function initBrowser(doc, win) {
       if (res.status !== 402) return res;
       var body = await res.json();
       if (onStatus) onStatus('solving proof-of-work (difficulty ' + body.difficulty + ')…');
-      var nonce = await solvePow(body.challenge, body.difficulty);
+      var nonce = await solvePow(body.ticket, body.difficulty);
       var next = new win.URL(url, win.location.href);
       next.searchParams.set('pow', nonce);
+      next.searchParams.set('ticket', body.ticket);
       url = next.toString();
     }
     throw new Error('could not satisfy proof-of-work after several attempts');
@@ -118,6 +119,7 @@ function initBrowser(doc, win) {
   hydrateInitialBodies();
 
   var list = doc.getElementById('messages');
+  var viewMode = 'feed';
   var seenIds = new Set(Array.from(list.querySelectorAll('li.msg')).map(function (li) { return li.dataset.id; }));
 
   function prependMessages(messages) {
@@ -147,12 +149,12 @@ function initBrowser(doc, win) {
       var res = await win.fetch('/', { headers: { Accept: 'application/json' } });
       if (!res.ok) return;
       var data = await res.json();
-      prependMessages(data.latest_messages || []);
+      if (viewMode === 'feed') prependMessages(data.latest_messages || []);
     } catch (e) {
       /* transient network error; next poll will retry */
     }
   }
-  if (win.location.pathname === '/') win.setInterval(pollLatest, 8000);
+  if (win.location.pathname === '/') win.setInterval(pollLatest, Number(doc.body.dataset.cacheIntervalMs));
 
   var postForm = doc.getElementById('post-form');
   var postBody = doc.getElementById('post-body');
@@ -196,6 +198,7 @@ function initBrowser(doc, win) {
   var searchStatus = doc.getElementById('search-status');
 
   async function runSearch(params) {
+    viewMode = 'search';
     var query = {};
     if (params.q) query.q = params.q;
     if (params.poster) query.poster = params.poster;

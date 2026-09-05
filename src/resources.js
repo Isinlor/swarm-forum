@@ -28,17 +28,13 @@ function dbUsageRatio(dbSizeBytes, maxDbSizeBytes) {
 }
 
 function freeDiskBytes(dir) {
-  try {
-    const stats = fs.statfsSync(dir);
-    return stats.bavail * stats.bsize;
-  } catch {
-    return Infinity; // can't measure free space — don't refuse posts over an unknown quantity
-  }
+  const stats = fs.statfsSync(dir);
+  return stats.bavail * stats.bsize;
 }
 
 function diskPressureRatio(freeBytes, minFreeBytes) {
   if (!minFreeBytes) return 0;
-  return Math.min(Math.max(1 - freeBytes / minFreeBytes, 0), 2);
+  return Math.min(Math.max((4 * minFreeBytes - freeBytes) / (3 * minFreeBytes), 0), 1);
 }
 
 /**

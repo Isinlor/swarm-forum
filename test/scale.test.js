@@ -34,7 +34,7 @@ function avgMs(fn, samples) {
 
 /**
  * A handful of rows through the exact code path a real `/post` uses —
- * `insertMessage()`, which computes `body_hash` and (via the schema's
+ * `insertMessage()`, which stores the body and (via the schema's
  * `messages_ai` trigger) populates the FTS index — checked before any
  * bulk data exists. This is what keeps the fast bulk loader below
  * honest: if it ever silently drifted from what production actually
@@ -67,8 +67,7 @@ function sanityCheckProductionInsertPath(db) {
  * Inserts `count` filler rows (offset by `offset`) entirely inside
  * SQLite via a recursive CTE, chunked so no single statement has to
  * hold 500k pending rows in memory at once. This exists purely to make
- * the test fast: a per-row `insertMessage()` loop pays JS-side SHA-256
- * and a prepared-statement round trip 500,000 times, which is what
+ * the test fast: a per-row `insertMessage()` loop pays a prepared-statement round trip 500,000 times, which is what
  * actually made this test slow — not the row count SQLite has to serve
  * queries against afterward. Ids are `printf`-built from a plain
  * incrementing counter, zero-padded into the id's leading 8 hex digits,
@@ -84,11 +83,10 @@ function bulkInsertFiller(db, count, offset) {
       UNION ALL
       SELECT n + 1 FROM seq WHERE n < ?2
     )
-    INSERT INTO messages (id, body, body_hash, poster)
+    INSERT INTO messages (id, body, poster)
     SELECT
       printf('%08x-0000-7000-8000-%012x', n, n),
       printf('%s chatter about agents and forums uniquetag%d', ?3, n),
-      printf('%064x', n),
       CASE WHEN n % 5000 = 0 THEN ?4 ELSE printf('poster%d', n % 1000) END
     FROM seq
   `);

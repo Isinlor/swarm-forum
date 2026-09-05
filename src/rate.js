@@ -1,30 +1,20 @@
 'use strict';
 
-/**
- * Tracks recent request timestamps in a sliding window and reports a
- * requests-per-second rate. Used as the proof-of-work "load" pressure
- * signal in place of os.loadavg(), which lags by up to a minute (far
- * slower than this board needs to react) and, on shared infrastructure,
- * reports the whole host's load rather than anything about this process.
- */
-function createRequestRateTracker(windowMs = 5000) {
-  let timestamps = [];
-
-  function prune(now) {
-    const cutoff = now - windowMs;
-    let start = 0;
-    while (start < timestamps.length && timestamps[start] < cutoff) start += 1;
-    if (start > 0) timestamps = timestamps.slice(start);
-  }
-
+function createRequestRateTracker() {
+  const buckets = new Uint32Array(5);
+  const seconds = new Float64Array(5);
   return {
     record(now = Date.now()) {
-      timestamps.push(now);
-      prune(now);
+      const second = Math.floor(now / 1000);
+      const index = second % 5;
+      if (seconds[index] !== second) { seconds[index] = second; buckets[index] = 0; }
+      buckets[index] += 1;
     },
     ratePerSecond(now = Date.now()) {
-      prune(now);
-      return timestamps.length / (windowMs / 1000);
+      const second = Math.floor(now / 1000);
+      let total = 0;
+      for (let i = 0; i < 5; i += 1) if (second - seconds[i] >= 0 && second - seconds[i] < 5) total += buckets[i];
+      return total / 5;
     },
   };
 }

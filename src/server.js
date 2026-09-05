@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const { openDb } = require('./db');
 const { createLatestCache } = require('./cache');
-const { uuidv7, isUuid, minUuidv7ForTimestamp } = require('./uuid');
+const { uuidv7, isUuid } = require('./uuid');
 const pow = require('./pow');
 const resources = require('./resources');
 const { posterHash, isPosterHash } = require('./poster');
@@ -16,7 +16,6 @@ const { clientIp } = require('./ip');
 const { createRequestRateTracker } = require('./rate');
 const { buildDocs, renderHome, renderMessageJson } = require('./render');
 
-const PERMALINK_RE = /^\/m\/([0-9a-f-]{36})$/i;
 const STATIC_FILES = {
   '/client.js': { path: path.join(__dirname, 'public', 'client.js'), type: 'text/javascript; charset=utf-8' },
   '/pow-worker.js': { path: path.join(__dirname, 'public', 'pow-worker.js'), type: 'text/javascript; charset=utf-8' },
@@ -25,7 +24,9 @@ const STATIC_FILES = {
 const STATIC_FILE_CONTENTS = Object.fromEntries(
   Object.entries(STATIC_FILES).map(([route, { path: filePath, type }]) => [
     route,
-    { body: fs.readFileSync(filePath, 'utf8'), type },
+    (() => { const body = fs.readFileSync(filePath, 'utf8'); return {
+      body, type, etag: `"${crypto.createHash('sha256').update(body).digest('base64url')}"`,
+    }; })(),
   ]),
 );
 // worker-src 'self': the PoW worker is a same-origin file (/pow-worker.js
@@ -39,23 +40,17 @@ const STATIC_FILE_CONTENTS = Object.fromEntries(
 // context here.
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
   "object-src 'none'; base-uri 'none'; worker-src 'self'";
-// How long a solved proof-of-work nonce stays valid. A client that solves
-// a challenge for text T can replay that same nonce to repost T again
-// within this window at zero extra cost (verification is stateless, see
-// pow.js) — the duplicate-text check in handlePost is what actually
-// closes that hole, by rejecting a repost of identical text within it.
-const POW_VALIDITY_MS = pow.WINDOW_MS * pow.WINDOW_TOLERANCE;
-
 function loadConfig(overrides = {}) {
   const env = overrides.env || process.env;
   const num = (name, fallback) => {
     const raw = overrides[name] ?? env[name];
     if (raw === undefined || raw === '') return fallback;
     const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : fallback;
+    if (!Number.isFinite(parsed)) throw new Error(`${name} must be a finite number`);
+    return parsed;
   };
   const dataDir = overrides.dataDir || env.DATA_DIR || path.join(process.cwd(), 'data');
-  return {
+  const config = {
     port: num('port', num('PORT', 8080)),
     host: overrides.host || env.HOST || '0.0.0.0',
     dataDir,
@@ -67,7 +62,8 @@ function loadConfig(overrides = {}) {
     // persisted one from disk (see secret.js) rather than generating a
     // fresh, unpersisted one here.
     posterSecret: overrides.posterSecret || env.POSTER_SECRET || null,
-    trustProxyHops: num('trustProxyHops', num('TRUST_PROXY_HOPS', 0)),
+    clientIpHeader: overrides.clientIpHeader ?? env.CLIENT_IP_HEADER ?? 'x-forwarded-for',
+    clientIpHops: num('clientIpHops', num('CLIENT_IP_HOPS', 1)),
     maxMessageBytes: num('maxMessageBytes', num('MAX_MESSAGE_BYTES', 2048)),
     maxQueryLength: num('maxQueryLength', num('MAX_QUERY_LENGTH', 200)),
     resultLimit: num('resultLimit', num('RESULT_LIMIT', 100)),
@@ -85,6 +81,22 @@ function loadConfig(overrides = {}) {
       post: num('maxDifficultyPost', num('MAX_DIFFICULTY_POST', resources.MAX_DIFFICULTY.post)),
     },
   };
+  const positive = ['maxMessageBytes', 'maxQueryLength', 'resultLimit', 'latestLimit',
+    'cacheIntervalMs', 'targetRequestsPerSecond'];
+  const nonnegative = ['port', 'maxDbSizeBytes', 'minFreeBytes'];
+  const integers = [...positive, ...nonnegative, 'clientIpHops'];
+  for (const name of integers) if (!Number.isInteger(config[name])) throw new Error(`${name} must be an integer`);
+  for (const name of positive) if (config[name] <= 0) throw new Error(`${name} must be positive`);
+  for (const name of nonnegative) if (config[name] < 0) throw new Error(`${name} must be nonnegative`);
+  if (config.clientIpHops <= 0) throw new Error('clientIpHops must be positive');
+  if (typeof config.clientIpHeader !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(config.clientIpHeader))
+    throw new Error('clientIpHeader must be a valid HTTP header name');
+  for (const endpoint of ['search', 'post']) {
+    const base = config.baseDifficulty[endpoint]; const max = config.maxDifficulty[endpoint];
+    if (!Number.isInteger(base) || !Number.isInteger(max) || base < 0 || base > max || max > 256)
+      throw new Error(`difficulty for ${endpoint} must satisfy 0 <= base <= max <= 256`);
+  }
+  return config;
 }
 
 function sendJson(res, status, body, cacheControl = 'no-store', extraHeaders = {}) {
@@ -114,7 +126,16 @@ function sendHtml(res, status, html, cacheControl = 'no-store', extraHeaders = {
 // browser sends a literal `text/html`. So JSON is the default; HTML is
 // the special case that has to ask for itself explicitly.
 function wantsHtml(req) {
-  return (req.headers.accept || '').includes('text/html');
+  const ranges = (req.headers.accept || '').split(',').map((part) => {
+    const [type, ...params] = part.trim().toLowerCase().split(';');
+    let q = 1;
+    for (const param of params) if (param.trim().startsWith('q=')) {
+      const parsed = Number(param.trim().slice(2)); q = Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 0;
+    }
+    return { type, q };
+  });
+  const match = ranges.find((range) => range.type === 'text/html');
+  return Boolean(match && match.q > 0);
 }
 
 /** Runs `fn` at most once per `ttlMs`, returning the cached value
@@ -147,38 +168,6 @@ function memoize(fn, ttlMs) {
  * advertised to someone in it, so honoring the easiest of them costs
  * nothing verification is meant to protect. Bounded size, no disk usage.
  */
-function createDifficultyTracker(computeState, baseDifficulty, maxDifficulty) {
-  const minSeen = new Map();
-
-  function freshDifficulty(endpoint) {
-    return resources.computeDifficulty(endpoint, computeState(), baseDifficulty, maxDifficulty);
-  }
-
-  function recordMin(key, value) {
-    const existing = minSeen.get(key);
-    if (existing === undefined || value < existing) minSeen.set(key, value);
-    if (minSeen.size > 64) minSeen.delete(minSeen.keys().next().value);
-  }
-
-  return {
-    // Always the number this specific request is told to solve — never
-    // diluted down to the slot's historical minimum, or the ramp could
-    // never actually advertise a harder value once an easy one occurred.
-    issue(endpoint, slot) {
-      const value = freshDifficulty(endpoint);
-      recordMin(`${endpoint}:${slot}`, value);
-      return value;
-    },
-    verify(endpoint, slot) {
-      const key = `${endpoint}:${slot}`;
-      if (minSeen.has(key)) return minSeen.get(key);
-      const value = freshDifficulty(endpoint);
-      recordMin(key, value);
-      return value;
-    },
-  };
-}
-
 function createServer(overrides = {}) {
   const config = loadConfig(overrides);
   if (!config.posterSecret) {
@@ -197,6 +186,8 @@ function createServer(overrides = {}) {
   const db = openDb(config.dbFile);
   const cache = createLatestCache(db, { intervalMs: config.cacheIntervalMs, limit: config.latestLimit });
   const rateTracker = createRequestRateTracker();
+  const instanceId = crypto.randomBytes(16).toString('base64url');
+  const tickets = pow.createTicketStore();
 
   const computeState = memoize(() => resources.currentState({
     dbSizeBytes: db.fileSizeBytes(),
@@ -206,8 +197,6 @@ function createServer(overrides = {}) {
     loadRatio: rateTracker.ratePerSecond() / config.targetRequestsPerSecond,
   }), 1000);
 
-  const difficulty = createDifficultyTracker(computeState, config.baseDifficulty, config.maxDifficulty);
-
   const docs = () => buildDocs({
     version: require('../package.json').version,
     latestLimit: config.latestLimit,
@@ -215,7 +204,7 @@ function createServer(overrides = {}) {
     maxMessageBytes: config.maxMessageBytes,
     maxQueryLength: config.maxQueryLength,
     resultLimit: config.resultLimit,
-    powWindowSeconds: Math.round(POW_VALIDITY_MS / 1000),
+    powWindowSeconds: Math.round(pow.TICKET_LIFETIME_MS / 1000),
     baseDifficulty: config.baseDifficulty,
     maxDifficulty: config.maxDifficulty,
   });
@@ -228,18 +217,25 @@ function createServer(overrides = {}) {
   function gate(req, res, url, endpoint) {
     const now = Date.now();
     const nonce = url.searchParams.get('pow');
-    const verifySlot = (slot) => difficulty.verify(endpoint, slot);
-    if (nonce && pow.verifyProof(config.powSecret, url.pathname, url.searchParams, nonce, verifySlot, now)) {
-      return true;
-    }
-    const currentSlot = pow.timeslotFor(now);
-    const difficultyValue = difficulty.issue(endpoint, currentSlot);
-    const challenge = pow.issueChallenge(config.powSecret, url.pathname, url.searchParams, difficultyValue, now);
+    const ticket = url.searchParams.get('ticket');
+    const source = endpoint === 'post' ? clientIp(req, config.clientIpHeader, config.clientIpHops) : undefined;
+    const verified = ticket && nonce && pow.verifyTicket(config.powSecret, instanceId,
+      url.pathname, url.searchParams, ticket, nonce, { now, source });
+    if (verified) return verified;
+    const difficultyValue = resources.computeDifficulty(endpoint, computeState(), config.baseDifficulty, config.maxDifficulty);
+    const challenge = pow.issueTicket(config.powSecret, instanceId, url.pathname, url.searchParams,
+      difficultyValue, { now, source });
     sendJson(res, 402, { error: 'proof_of_work_required', ...challenge });
-    return false;
+    return null;
   }
 
-  const homeCacheControl = () => `public, max-age=${Math.round(config.cacheIntervalMs / 1000)}, stale-while-revalidate=30`;
+  function consume(ticket) {
+    if (!tickets.consume(ticket.j, ticket.e)) return false;
+    rateTracker.record();
+    return true;
+  }
+
+  const homeCacheControl = () => `public, max-age=${Math.round(config.cacheIntervalMs / 1000)}`;
 
   function handleHome(req, res) {
     const snapshot = cache.get();
@@ -277,7 +273,8 @@ function createServer(overrides = {}) {
       sendJson(res, 507, { error: 'insufficient_storage', detail: 'the board is at capacity; try again later' });
       return;
     }
-    if (!gate(req, res, url, 'post')) return;
+    const paid = gate(req, res, url, 'post');
+    if (!paid) return;
 
     const message = url.searchParams.get('message');
     if (!message) {
@@ -295,16 +292,15 @@ function createServer(overrides = {}) {
       sendJson(res, 400, { error: 'bad_request', detail: `message exceeds ${config.maxMessageBytes} bytes` });
       return;
     }
-    const dedupSinceId = minUuidv7ForTimestamp(Date.now() - POW_VALIDITY_MS);
-    if (db.recentDuplicate(message, dedupSinceId)) {
-      sendJson(res, 409, {
-        error: 'duplicate_message',
-        detail: 'this exact text was already posted recently; edit it or wait for the proof-of-work window to pass',
-      });
-      return;
-    }
-
-    const ip = clientIp(req, config.trustProxyHops);
+    let finalState;
+    try { finalState = resources.currentState({ dbSizeBytes: db.fileSizeBytes(),
+      maxDbSizeBytes: config.maxDbSizeBytes, dataDir: config.dataDir,
+      minFreeBytes: config.minFreeBytes, loadRatio: rateTracker.ratePerSecond() / config.targetRequestsPerSecond }); }
+    catch (err) { console.error('swarm-forum: final capacity measurement failed', err);
+      sendJson(res, 507, { error: 'insufficient_storage', detail: 'capacity could not be verified' }); return; }
+    if (resources.isOverCapacity(finalState)) { sendJson(res, 507, { error: 'insufficient_storage', detail: 'the board is at capacity; try again later' }); return; }
+    if (!consume(paid)) { sendJson(res, 409, { error: 'ticket_already_used' }); return; }
+    const ip = clientIp(req, config.clientIpHeader, config.clientIpHops);
     const id = uuidv7();
     db.insertMessage({ id, message, poster: posterHash(config.posterSecret, ip) });
     const saved = db.getById(id);
@@ -312,7 +308,8 @@ function createServer(overrides = {}) {
   }
 
   function handleSearch(req, res, url, overrideQuery) {
-    if (!gate(req, res, url, 'search')) return;
+    const paid = gate(req, res, url, 'search');
+    if (!paid) return;
 
     const rawQ = overrideQuery ?? url.searchParams.get('q');
     const q = rawQ ? rawQ.trim() : null;
@@ -345,6 +342,7 @@ function createServer(overrides = {}) {
       return;
     }
 
+    if (!consume(paid)) { sendJson(res, 409, { error: 'ticket_already_used' }); return; }
     let results;
     if (q && isUuid(q)) {
       // The id itself is an exact, indexed lookup. Anything *referencing*
@@ -366,8 +364,6 @@ function createServer(overrides = {}) {
   }
 
   const server = http.createServer((req, res) => {
-    rateTracker.record();
-
     // GET only, deliberately: HEAD would need to carry a 402 challenge
     // body, but HEAD responses have no body by definition (fetch/undici
     // discard it client-side even if a server writes one), so it can
@@ -393,17 +389,18 @@ function createServer(overrides = {}) {
         return;
       }
       if (STATIC_FILE_CONTENTS[url.pathname]) {
-        const { body, type } = STATIC_FILE_CONTENTS[url.pathname];
-        res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'public, max-age=3600' });
+        const { body, type, etag } = STATIC_FILE_CONTENTS[url.pathname];
+        if (req.headers['if-none-match'] === etag) { res.writeHead(304, { 'Cache-Control': 'no-cache', ETag: etag }); res.end(); return; }
+        res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache', ETag: etag });
         res.end(body);
         return;
       }
-      const permalink = PERMALINK_RE.exec(url.pathname);
-      if (permalink) {
+      const permalink = url.pathname.startsWith('/m/') ? decodeURIComponent(url.pathname.slice(3)) : null;
+      if (permalink && isUuid(permalink)) {
         if (wantsHtml(req)) {
-          handlePermalinkHtml(res, permalink[1]);
+          handlePermalinkHtml(res, permalink);
         } else {
-          handleSearch(req, res, url, permalink[1]);
+          handleSearch(req, res, url, permalink);
         }
         return;
       }
@@ -417,11 +414,12 @@ function createServer(overrides = {}) {
       }
       sendJson(res, 404, { error: 'not_found', detail: 'unknown endpoint; see GET /' });
     } catch (err) {
-      sendJson(res, 500, { error: 'internal_error', detail: err.message });
+      console.error('swarm-forum: request failed', err);
+      sendJson(res, 500, { error: 'internal_error' });
     }
   });
 
-  server.swarmForum = { config, db, cache, computeState, difficulty };
+  server.swarmForum = { config, db, cache, computeState, tickets, instanceId };
   server.on('close', () => {
     cache.stop();
     db.close();
@@ -439,4 +437,4 @@ function start(overrides = {}) {
   return server;
 }
 
-module.exports = { createServer, start, loadConfig, createDifficultyTracker };
+module.exports = { createServer, start, loadConfig, wantsHtml };

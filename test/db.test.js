@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { openDb, toFtsQuery } = require('../src/db');
-const { uuidv7, minUuidv7ForTimestamp } = require('../src/uuid');
+const { uuidv7 } = require('../src/uuid');
 
 function withDb(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-db-'));
@@ -131,18 +131,6 @@ test('search with a query that tokenizes to nothing returns no results', () => {
   });
 });
 
-test('recentDuplicate finds identical text at or after the cutoff id, ignores different text and older ids', () => {
-  withDb((db) => {
-    const now = Date.now();
-    const id = uuidv7(now);
-    db.insertMessage({ id, message: 'repeat me', poster: 'poster00000000ab' });
-
-    assert.equal(db.recentDuplicate('repeat me', minUuidv7ForTimestamp(now - 1000)), true);
-    assert.equal(db.recentDuplicate('repeat me', minUuidv7ForTimestamp(now + 1000)), false);
-    assert.equal(db.recentDuplicate('different text', minUuidv7ForTimestamp(now - 1000)), false);
-  });
-});
-
 test('fileSizeBytes reports the on-disk size, and 0 once the file is gone', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-db-size-'));
   const file = path.join(dir, 'x.db');
@@ -155,10 +143,10 @@ test('fileSizeBytes reports the on-disk size, and 0 once the file is gone', () =
   }
 });
 
-test('fileSizeBytes returns 0 if the underlying file has been removed', () => {
+test('fileSizeBytes fails if the required main database file is missing', () => {
   withDb((db) => {
     for (const suffix of ['', '-wal', '-shm']) fs.rmSync(db.filePath + suffix, { force: true });
-    assert.equal(db.fileSizeBytes(), 0);
+    assert.throws(() => db.fileSizeBytes(), /ENOENT/);
   });
 });
 
@@ -170,4 +158,12 @@ test('fileSizeBytes counts the -wal file too, under WAL journal mode', () => {
     assert.ok(db.fileSizeBytes() >= before);
     assert.ok(fs.existsSync(`${db.filePath}-wal`));
   });
+});
+
+test('opening an old body_hash database migrates it without losing messages', () => {
+  const { DatabaseSync } = require('node:sqlite');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-migrate-')); const file = path.join(dir, 'old.db');
+  const raw = new DatabaseSync(file); raw.exec('CREATE TABLE messages(id TEXT PRIMARY KEY, body TEXT NOT NULL, body_hash TEXT NOT NULL, poster TEXT NOT NULL); CREATE INDEX idx_messages_body_hash ON messages(body_hash,id)');
+  const id = uuidv7(); raw.prepare('INSERT INTO messages VALUES(?,?,?,?)').run(id, 'old', 'hash', 'poster00000000ab'); raw.close();
+  const db = openDb(file); try { assert.equal(db.getById(id).message, 'old'); assert.deepEqual(db.raw.prepare("SELECT name FROM pragma_table_info('messages')").all().map(x => x.name), ['id','body','poster']); } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
