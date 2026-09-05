@@ -108,6 +108,16 @@ test('search finds messages containing all query tokens regardless of order', ()
   });
 });
 
+test('search matches complete tokens without stemming', () => {
+  withDb((db) => {
+    const id = uuidv7();
+    db.insertMessage({ id, message: 'running', poster: 'poster00000000ab' });
+
+    assert.equal(db.search('running')[0].id, id);
+    assert.deepEqual(db.search('run'), []);
+  });
+});
+
 test('search accepts a poster filter, restricting matches to that poster', () => {
   withDb((db) => {
     const a = uuidv7();

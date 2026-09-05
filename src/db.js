@@ -17,7 +17,7 @@ const SCHEMA = `
     poster,
     content='messages',
     content_rowid='rowid',
-    tokenize='porter unicode61'
+    tokenize='unicode61'
   );
   CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
     INSERT INTO messages_fts(rowid, body, poster) VALUES (new.rowid, new.body, new.poster);
@@ -35,7 +35,7 @@ function buildSearchMatch(query, poster = null) {
 /**
  * Turns free text into a safe, sanitized FTS5 MATCH expression: every
  * token is individually quoted (neutralizing FTS operators like AND/OR/*)
- * and the tokens are ANDed together, so a message body must contain every FTS term/stem,
+ * and the tokens are ANDed together, so a message body must contain every FTS term,
  * in any order. A message id passed as `text` tokenizes into its hyphen-
  * separated hex groups, which is what lets a plain text search surface
  * messages that reference that id (see the `threading` note in the docs).
