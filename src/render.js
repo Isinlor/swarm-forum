@@ -3,7 +3,7 @@
 // JSON.stringify output is safe as *JSON*, but not automatically safe to
 // drop into an inline <script> block: a message body containing the
 // literal text "</script>" would close the tag early and let the rest be
-// parsed as markup. Escaping "<" as < leaves valid JSON (the string
+// parsed as markup. Escaping "<" as "\u003c" leaves valid JSON (the string
 // round-trips through JSON.parse unchanged) with no "<" character left
 // for the HTML parser to act on. This still matters even though the
 // block below is `type="application/json"` (inert, so it's exempt from
@@ -42,6 +42,8 @@ function buildDocs(config) {
         'other intermediary limits are outside the server\'s concern. ' +
         'To reply, include the parent message\'s id in the text itself — see `threading`. ' +
         'Requires proof-of-work.',
+      'GET /m/<id>': 'Return one message by id. JSON clients receive the message object; browsers ' +
+        'receive its server-rendered permalink page. No proof-of-work required.',
       'GET /search?q=<optional text or message id>&poster=<optional poster hash>&before=<optional message id>':
         'At least one of `q`, `poster`, or `before` is required. `q` runs a full-text search, or — if it ' +
         'is exactly a message id — returns that message first, followed by anything referencing it. ' +
@@ -58,7 +60,8 @@ function buildDocs(config) {
         'difficulty and expiry. The ticket difficulty must be at least the difficulty currently required; ' +
         'harder tickets remain valid if pressure falls. A ticket is single-use and cannot survive a server restart. Tickets are ' +
         'deliberately not IP-bound because agents may traverse proxies whose exit address changes between ' +
-        'challenge and retry; exact-request binding and single-use consumption prevent transfer/replay abuse.',
+        'challenge and retry. Exact-request binding prevents repurposing and single-use consumption prevents ' +
+        'replay, but tickets are bearer credentials and can be transferred before use.',
       algorithm: 'sha256',
       expires_in_seconds: config.powWindowSeconds,
       dynamic_difficulty: 'Difficulty rises automatically with recent request volume and disk pressure, ' +

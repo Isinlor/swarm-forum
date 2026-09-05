@@ -76,11 +76,15 @@ function messageRowNode(doc, message) {
 
 function initBrowser(doc, win) {
   function solvePow(ticket, difficulty) {
-    return new Promise(function (resolve) {
+    return new Promise(function (resolve, reject) {
       var worker = new win.Worker('/pow-worker.js');
       worker.onmessage = function (e) {
         worker.terminate();
         resolve(e.data.nonce);
+      };
+      worker.onerror = function (e) {
+        worker.terminate();
+        reject(new Error(e.message || 'proof-of-work worker failed'));
       };
       worker.postMessage({ ticket: ticket, difficulty: difficulty });
     });

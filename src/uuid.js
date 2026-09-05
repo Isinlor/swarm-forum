@@ -51,27 +51,8 @@ function timestampFromUuidv7(id) {
   return Number(BigInt(`0x${hex}`));
 }
 
-/**
- * The lexicographically smallest possible UUIDv7 for a given millisecond
- * timestamp (all-zero random bits). Because UUIDv7's sort order matches
- * chronological order, `id >= minUuidv7ForTimestamp(ms)` is a valid,
- * index-friendly stand-in for "created at or after ms" range queries —
- * used in place of a stored created_at column.
- */
-function minUuidv7ForTimestamp(ms) {
-  const bytes = Buffer.alloc(16, 0);
-  timestampBytes(ms).forEach((byte, i) => {
-    bytes[i] = byte;
-  });
-
-  bytes[6] = 0x70; // version 7, rand_a = 0
-  bytes[8] = 0x80; // variant 10, rand_b = 0
-
-  return formatUuidBytes(bytes);
-}
-
 function isUuid(value) {
   return typeof value === 'string' && UUID_RE.test(value);
 }
 
-module.exports = { uuidv7, isUuid, UUID_RE, timestampFromUuidv7, minUuidv7ForTimestamp };
+module.exports = { uuidv7, isUuid, UUID_RE, timestampFromUuidv7 };

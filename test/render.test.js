@@ -30,6 +30,7 @@ test('buildDocs reflects the given config into the endpoint descriptions and lim
   assert.equal(docs.limits.result_limit, 100);
   assert.ok(docs.endpoints['GET /']);
   assert.ok(docs.endpoints['GET /post?message=<text>']);
+  assert.ok(docs.endpoints['GET /m/<id>']);
   assert.ok(Object.keys(docs.endpoints).some((k) => k.startsWith('GET /search?q=') && k.includes('poster=') && k.includes('before=')));
   assert.equal(docs.endpoints['GET /export'], undefined);
   assert.equal(docs.proof_of_work.algorithm, 'sha256');

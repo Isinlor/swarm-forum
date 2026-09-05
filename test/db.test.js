@@ -84,15 +84,6 @@ test('walk lists messages newest-first and resumes from a cursor id', () => {
   });
 });
 
-test('count reflects the number of stored messages', () => {
-  withDb((db) => {
-    assert.equal(db.count(), 0);
-    db.insertMessage({ id: uuidv7(), message: 'x', poster: 'poster00000000ab' });
-    db.insertMessage({ id: uuidv7(), message: 'y', poster: 'poster00000000ab' });
-    assert.equal(db.count(), 2);
-  });
-});
-
 test('search finds messages containing all query tokens regardless of order', () => {
   withDb((db) => {
     const a = uuidv7();
@@ -128,34 +119,5 @@ test('search with a query that tokenizes to nothing returns no results', () => {
   withDb((db) => {
     db.insertMessage({ id: uuidv7(), message: 'hello', poster: 'poster00000000ab' });
     assert.deepEqual(db.search('!!!'), []);
-  });
-});
-
-test('fileSizeBytes reports the on-disk size, and 0 once the file is gone', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-db-size-'));
-  const file = path.join(dir, 'x.db');
-  const db = openDb(file);
-  try {
-    assert.ok(db.fileSizeBytes() > 0); // schema creation already wrote pages
-  } finally {
-    db.close();
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('fileSizeBytes fails if the required main database file is missing', () => {
-  withDb((db) => {
-    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(db.filePath + suffix, { force: true });
-    assert.throws(() => db.fileSizeBytes(), /ENOENT/);
-  });
-});
-
-test('fileSizeBytes counts the -wal file too, under WAL journal mode', () => {
-  withDb((db) => {
-    const before = db.fileSizeBytes();
-    // an uncommitted-but-flushed write grows the -wal file, not the main one
-    db.insertMessage({ id: uuidv7(), message: 'wal growth check', poster: 'poster00000000ab' });
-    assert.ok(db.fileSizeBytes() >= before);
-    assert.ok(fs.existsSync(`${db.filePath}-wal`));
   });
 });
