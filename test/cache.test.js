@@ -16,15 +16,21 @@ function sleep(ms) {
 test('createLatestCache snapshots on creation and via manual refresh', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-cache-'));
   const db = openDb(path.join(dir, 'test.db'));
-  const cache = createLatestCache(db, { intervalMs: 60_000, limit: 10 });
+  const cache = createLatestCache(db, { intervalMs: 60_000, limit: 10,
+    serialize: ({ messages }) => ({ count: messages.length }),
+    render: ({ messages }) => `<p>${messages.length}</p>` });
   try {
     assert.deepEqual(cache.get().messages, []);
+    assert.equal(cache.get().json, '{"count":0}');
+    assert.equal(cache.get().html, '<p>0</p>');
 
     db.insertMessage({ id: uuidv7(), message: 'hi', poster: 'poster00000000ab' });
     assert.deepEqual(cache.get().messages, []); // not yet refreshed
 
     const snapshot = cache.refresh();
     assert.equal(snapshot.messages.length, 1);
+    assert.equal(snapshot.json, '{"count":1}');
+    assert.equal(snapshot.html, '<p>1</p>');
     assert.equal(cache.get().messages.length, 1);
   } finally {
     cache.stop();

@@ -59,6 +59,23 @@ test('computeDifficulty is uncapped for an endpoint with no entry in the max-dif
   assert.ok(value > 3); // load(8) + disk(12) extra bits, nothing capping the total
 });
 
+test('difficulty rises immediately and decays by one bit every ten seconds', () => {
+  const required = { search: 3, post: 4 };
+  const controller = resources.createDifficultyController((endpoint) => required[endpoint], 1000);
+  assert.equal(controller.get('search', 1000), 3);
+  required.search = 8;
+  assert.equal(controller.get('search', 10_999), 8);
+  required.search = 3;
+  assert.equal(controller.get('search', 11_000), 8);
+  assert.equal(controller.get('search', 20_998), 8);
+  assert.equal(controller.get('search', 20_999), 7);
+  assert.equal(controller.get('search', 50_000), 5);
+  required.search = 9;
+  assert.equal(controller.get('search', 50_001), 9);
+  required.post = 2;
+  assert.equal(controller.get('post', 50_001), 2);
+});
+
 test('isOverCapacity compares raw free bytes, not the normalized ratio', () => {
   // fires the moment free space drops below the floor, not only at exactly zero
   assert.equal(resources.isOverCapacity({ freeBytes: 999, minFreeBytes: 1000 }), true);

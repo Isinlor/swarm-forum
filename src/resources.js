@@ -66,6 +66,29 @@ function computeDifficulty(endpoint, state, baseDifficulty = BASE_DIFFICULTY, ma
   return cap === undefined ? total : Math.min(total, cap);
 }
 
+/** Raises synchronously but applies elapsed ten-second decay steps one bit at
+ * a time. Updating lazily avoids a timer while preserving the same observable
+ * difficulty whenever a request actually needs it. */
+function createDifficultyController(requiredDifficulty, now = Date.now()) {
+  const stored = { search: requiredDifficulty('search'), post: requiredDifficulty('post') };
+  const decayAt = { search: now + 10_000, post: now + 10_000 };
+  return {
+    get(endpoint, currentNow = Date.now()) {
+      const required = requiredDifficulty(endpoint);
+      if (required > stored[endpoint]) {
+        stored[endpoint] = required;
+        decayAt[endpoint] = currentNow + 10_000;
+      }
+      if (currentNow >= decayAt[endpoint]) {
+        const intervals = Math.floor((currentNow - decayAt[endpoint]) / 10_000) + 1;
+        stored[endpoint] = Math.max(required, stored[endpoint] - intervals);
+        decayAt[endpoint] += intervals * 10_000;
+      }
+      return stored[endpoint];
+    },
+  };
+}
+
 /** Refuses posting on raw byte comparisons, not on the normalized ratios
  * above: diskPressureRatio reaches its own "1" only once free space is
  * exactly zero, by which point SQLite is already failing writes. Compare
@@ -93,6 +116,7 @@ module.exports = {
   diskPressureRatio,
   extraBits,
   computeDifficulty,
+  createDifficultyController,
   isOverCapacity,
   currentState,
 };

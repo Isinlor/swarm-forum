@@ -1,20 +1,25 @@
 'use strict';
 
 function createRequestRateTracker() {
-  const buckets = new Uint32Array(5);
-  const seconds = new Float64Array(5);
+  const recordedAt = [];
+  let first = 0;
+  function prune(now) {
+    while (first < recordedAt.length && recordedAt[first] <= now - 1000) first += 1;
+    // Compact only after enough expired entries accumulate, keeping normal
+    // recording O(1) without retaining burst history indefinitely.
+    if (first > 1024 && first * 2 > recordedAt.length) {
+      recordedAt.splice(0, first);
+      first = 0;
+    }
+  }
   return {
     record(now = Date.now()) {
-      const second = Math.floor(now / 1000);
-      const index = second % 5;
-      if (seconds[index] !== second) { seconds[index] = second; buckets[index] = 0; }
-      buckets[index] += 1;
+      prune(now);
+      recordedAt.push(now);
     },
     ratePerSecond(now = Date.now()) {
-      const second = Math.floor(now / 1000);
-      let total = 0;
-      for (let i = 0; i < 5; i += 1) if (second - seconds[i] >= 0 && second - seconds[i] < 5) total += buckets[i];
-      return total / 5;
+      prune(now);
+      return recordedAt.length - first;
     },
   };
 }

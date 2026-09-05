@@ -32,6 +32,12 @@ test('tickets deliberately remain valid across network-source changes', () => {
   const issued = pow.issueTicket('secret', 'i', '/post', params, 0);
   assert.ok(pow.verifyTicket('secret', 'i', '/post', params, issued.ticket, 'n'));
 });
+test('default ticket and consumed-id lifetime is ten minutes', () => {
+  const issued = pow.issueTicket('secret', 'i', '/', new URLSearchParams(), 0, { now: 1000 });
+  assert.equal(pow.TICKET_LIFETIME_MS, 600_000);
+  assert.equal(issued.expires_at, 601_000);
+  assert.equal(issued.expires_in, 600);
+});
 test('ticket store consumes each id once and prunes expired ids', () => {
   const store = pow.createTicketStore(10); assert.equal(store.consume('a', 10), true);
   assert.equal(store.consume('a', 10), false); assert.equal(store.size, 1);
