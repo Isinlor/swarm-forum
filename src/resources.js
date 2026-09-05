@@ -56,7 +56,9 @@ function computeDifficulty(endpoint, state, baseDifficulty = BASE_DIFFICULTY, ma
   const base = baseDifficulty[endpoint];
   if (base === undefined) throw new Error(`unknown endpoint: ${endpoint}`);
   const load = extraBits(state.loadRatio, 0.6, 1.5, 8);
-  const disk = extraBits(state.diskPressureRatio, 0.5, 2, 12);
+  // Search cannot consume disk capacity, so disk pressure only makes the
+  // operation that writes to disk more expensive.
+  const disk = endpoint === 'post' ? extraBits(state.diskPressureRatio, 0.5, 2, 12) : 0;
   const total = base + load + disk;
   const cap = maxDifficulty[endpoint];
   return cap === undefined ? total : Math.min(total, cap);
