@@ -498,6 +498,13 @@ test('search requires q, poster, or before; a stray `limit` param has no effect 
     const tooLongQ = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: 'x'.repeat(201) }));
     assert.equal(tooLongQ.status, 400);
 
+    const tooManyTokens = await powFetch(ctx.base, '/search?q=one+two+three+four+five+six');
+    assert.equal(tooManyTokens.status, 400);
+    assert.match((await tooManyTokens.json()).detail, /5 unique tokens/);
+
+    const repeatedTokens = await powFetch(ctx.base, '/search?q=one+two+three+four+five+one');
+    assert.equal(repeatedTokens.status, 200);
+
     await powFetch(ctx.base, '/post?' + new URLSearchParams({ message: 'searchable unique term xyzzy' }));
     const found = await powFetch(ctx.base, '/search?' + new URLSearchParams({ q: 'xyzzy', limit: '999999' }));
     const foundBody = await found.json();

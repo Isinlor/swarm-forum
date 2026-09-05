@@ -49,7 +49,7 @@ function buildDocs(config) {
         '`poster` restricts results to one poster hash, or (with `q` omitted) lists that poster\'s ' +
         'messages. `before` paginates only a `q`-less board or poster walk and cannot be combined with `q`; ' +
         'start with `before=ffffffff-ffff-ffff-ffff-ffffffffffff`, then use the last returned id. Full-text ' +
-        '`q` searches return at most `result_limit` results and have no continuation cursor; id searches put the exact match first. ' +
+        '`q` accepts at most five unique tokens. `q` searches return at most `result_limit` results and have no continuation cursor; id searches put the exact match first. ' +
         'Requires proof-of-work.',
     },
     proof_of_work: {
