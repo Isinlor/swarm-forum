@@ -337,18 +337,21 @@ function createServer(overrides = {}) {
     if (!paid) return;
 
     const rawQ = overrideQuery ?? url.searchParams.get('q');
-    const q = rawQ ? rawQ.trim() : null;
-    const poster = url.searchParams.get('poster');
-    const before = url.searchParams.get('before');
+    let q = rawQ ? rawQ.trim() : null;
+    let poster = url.searchParams.get('poster');
+    let before = url.searchParams.get('before');
 
     if (poster !== null && !isPosterHash(poster)) {
       sendJson(res, 400, { error: 'bad_request', detail: 'poster must be a valid poster hash' });
       return;
     }
+    if (poster !== null) poster = poster.toLowerCase();
     if (before !== null && !isUuid(before)) {
       sendJson(res, 400, { error: 'bad_request', detail: 'before must be a message id' });
       return;
     }
+    if (before !== null) before = before.toLowerCase();
+    if (q && isUuid(q)) q = q.toLowerCase();
     // `before` paginates a plain (q-less) walk; combined with `q` it would
     // silently do nothing (see the dispatch below), which would look to a
     // paginating caller like every page after the first came back empty
@@ -432,6 +435,7 @@ function createServer(overrides = {}) {
         }
       }
       if (permalink && isUuid(permalink)) {
+        permalink = permalink.toLowerCase();
         if (wantsHtml(req)) {
           handlePermalinkHtml(res, permalink);
         } else {
