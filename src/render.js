@@ -59,7 +59,7 @@ function buildDocs(config) {
         '`&ticket=<ticket>&pow=<nonce>` appended. The ticket authenticates the canonical request, ' +
         'difficulty and expiry. The ticket difficulty must be at least the difficulty currently required; ' +
         'harder tickets remain valid if pressure falls. Cheap request validation runs before this exchange. ' +
-        'Accepted operations consume tickets; the random per-boot signing key rejects pre-restart tickets. Tickets are ' +
+        'Tickets are consumed when a valid request reaches rate-limited or database work; the random per-boot signing key rejects pre-restart tickets. Tickets are ' +
         'deliberately not IP-bound because agents may traverse proxies whose exit address changes between ' +
         'challenge and retry. Tickets are bearer credentials and can be transferred before use.',
       algorithm: 'sha256',

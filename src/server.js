@@ -170,10 +170,7 @@ function createServer(overrides = {}) {
       config.posterSecret = secret;
       if (generated) {
         // eslint-disable-next-line no-console
-        console.log(
-          `swarm-forum: generated a new poster secret at ${secretFile}. If you run more than one ` +
-          'instance, set POSTER_SECRET to the same value on all of them so poster hashes agree.',
-        );
+        console.log(`swarm-forum: generated a new poster secret at ${secretFile}.`);
       }
     }
   } catch (err) {
