@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const pow = require('../src/pow');
 function solve(ticket, difficulty) { for (let n = 0;; n += 1) if (pow.meetsDifficulty(ticket, String(n), difficulty)) return String(n); }
+function reject(ticket, difficulty) { for (let n = 0;; n += 1) if (!pow.meetsDifficulty(ticket, String(n), difficulty)) return String(n); }
 test('canonicalRequest sorts parameters and excludes payment fields', () => {
   assert.equal(pow.canonicalRequest('/x', new URLSearchParams('z=2&pow=n&a=1&ticket=t')), '/x?a=1&z=2');
   assert.equal(pow.canonicalRequest('/x', new URLSearchParams('a=2&a=1')), '/x?a=2&a=1');
@@ -21,7 +22,10 @@ test('signed tickets enforce request, difficulty, expiry, instance, and nonce', 
   assert.equal(pow.verifyTicket('secret', 'other', '/post', params, issued.ticket, nonce, { now: 1050 }), null);
   assert.equal(pow.verifyTicket('secret', 'instance', '/post', new URLSearchParams('message=no'), issued.ticket, nonce, { now: 1050 }), null);
   assert.equal(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, nonce, { now: 1100 }), null);
-  assert.equal(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, 'bad', { now: 1050 }), null);
+  // Derive a failing nonce because at this intentionally cheap difficulty an
+  // arbitrary value has a 1-in-16 chance of being a valid proof by accident.
+  const invalidNonce = reject(issued.ticket, issued.difficulty);
+  assert.equal(pow.verifyTicket('secret', 'instance', '/post', params, issued.ticket, invalidNonce, { now: 1050 }), null);
 });
 test('tickets deliberately remain valid across network-source changes', () => {
   const params = new URLSearchParams('message=hi');
