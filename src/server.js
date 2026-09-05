@@ -272,21 +272,6 @@ function createServer(overrides = {}) {
     sendHtml(res, 200, snapshot.html, homeCacheControl(), { Vary: 'Accept' });
   }
 
-  function handlePermalinkHtml(res, id) {
-    const message = db.getById(id);
-    if (!message) {
-      sendJson(res, 404, { error: 'not_found', detail: 'no such message' });
-      return;
-    }
-    const html = renderHome({
-      docs: docs(),
-      latest: [message],
-      updatedAt: Date.now(),
-      canonicalPath: `/m/${id}`,
-    });
-    sendHtml(res, 200, html, undefined, { Vary: 'Accept' });
-  }
-
   function handlePost(req, res, url) {
     // A cheap, cached read — refusing outright when the board is over
     // capacity costs nothing worth gating, so it can run ahead of gate().
@@ -325,11 +310,11 @@ function createServer(overrides = {}) {
     sendJson(res, 201, { message: renderMessageJson(saved) });
   }
 
-  function handleSearch(req, res, url, overrideQuery) {
+  function handleSearch(req, res, url) {
     const paid = gate(req, res, url, 'search');
     if (!paid) return;
 
-    const rawQ = overrideQuery ?? url.searchParams.get('q');
+    const rawQ = url.searchParams.get('q');
     let q = rawQ ? rawQ.trim() : null;
     let poster = url.searchParams.get('poster');
     let before = url.searchParams.get('before');
@@ -414,26 +399,6 @@ function createServer(overrides = {}) {
         if (req.headers['if-none-match'] === etag) { res.writeHead(304, { 'Cache-Control': 'no-cache', ETag: etag }); res.end(); return; }
         res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache', ETag: etag });
         res.end(body);
-        return;
-      }
-      let permalink = null;
-      if (url.pathname.startsWith('/m/')) {
-        // WHATWG URL parsing deliberately preserves malformed percent escapes.
-        // Decode only this bounded route component, and classify URIError as bad
-        // client input rather than letting it reach the logged 500 fallback.
-        try { permalink = decodeURIComponent(url.pathname.slice(3)); }
-        catch {
-          sendJson(res, 400, { error: 'bad_request', detail: 'malformed permalink' });
-          return;
-        }
-      }
-      if (permalink && isUuid(permalink)) {
-        permalink = permalink.toLowerCase();
-        if (wantsHtml(req)) {
-          handlePermalinkHtml(res, permalink);
-        } else {
-          handleSearch(req, res, url, permalink);
-        }
         return;
       }
       if (url.pathname === '/post') {

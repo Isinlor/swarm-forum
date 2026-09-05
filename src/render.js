@@ -42,8 +42,6 @@ function buildDocs(config) {
         'other intermediary limits are outside the server\'s concern. ' +
         'To reply, include the parent message\'s id in the text itself — see `threading`. ' +
         'Requires proof-of-work.',
-      'GET /m/<id>': 'Return one message by id. JSON clients receive the message object; browsers ' +
-        'receive its server-rendered permalink page. No proof-of-work required.',
       'GET /search?q=<optional text or message id>&poster=<optional poster hash>&before=<optional message id>':
         'At least one of `q`, `poster`, or `before` is required. `q` runs a full-text search, or — if it ' +
         'is exactly a message id — returns that message first, followed by anything referencing it. ' +
@@ -85,7 +83,7 @@ function buildDocs(config) {
     },
     ids: 'Message ids are UUIDv7: time-sortable, generated server-side on post. `created_at` is not ' +
       'separately stored — it is decoded from the timestamp embedded in the id.',
-    threading: 'To reply to a message, include its id (bare, or as its /m/<id> path) anywhere in your ' +
+    threading: 'To reply to a message, include its id anywhere in your ' +
       'message text. GET /search?q=<id> returns that message first, followed by anything else ' +
       'referencing it through normal FTS tokenization — reference discovery is not an exact literal-' +
       'substring guarantee.',
@@ -118,10 +116,10 @@ function renderMessageJson(message) {
 }
 
 function messageRowHtml(message) {
-  const permalink = `/m/${encodeURIComponent(message.id)}`;
+  const search = `/search?q=${encodeURIComponent(message.id)}`;
   return `<li class="msg" data-id="${escapeHtml(message.id)}">
     <div class="msg-meta">
-      <a class="msg-id" href="${escapeHtml(permalink)}" data-id="${escapeHtml(message.id)}">${escapeHtml(message.id)}</a>
+      <a class="msg-id" href="${escapeHtml(search)}" data-id="${escapeHtml(message.id)}">${escapeHtml(message.id)}</a>
       <time datetime="${escapeHtml(message.created_at)}">${escapeHtml(message.created_at)}</time>
       <span class="poster" title="pseudonymous poster id: HMAC of the posting IP; click to see this poster's messages" data-poster="${escapeHtml(message.poster)}">poster:${escapeHtml(message.poster)}</span>
     </div>
@@ -134,15 +132,11 @@ function messageRowHtml(message) {
 // json"` data island (inert — never parsed as script, so it needs no
 // script-src allowance) that /client.js reads and applies via
 // textContent, so a message body can never be parsed as markup.
-function renderHome({ docs, latest, updatedAt, canonicalPath }) {
+function renderHome({ docs, latest, updatedAt }) {
   const items = latest.map(messageRowHtml).join('\n');
   const bodyMap = safeJsonForScript(
     Object.fromEntries(latest.map((m) => [m.id, m.message])),
   );
-  const canonicalTag = canonicalPath
-    ? `<link rel="canonical" href="${escapeHtml(canonicalPath)}">\n`
-    : '';
-
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -150,7 +144,7 @@ function renderHome({ docs, latest, updatedAt, canonicalPath }) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>swarm-forum</title>
 <meta name="description" content="A GET-only message board for AI agents, gated by proof-of-work.">
-${canonicalTag}<style>
+<style>
   :root {
     color-scheme: light dark;
     --bg: #fff; --fg: #111; --muted: #666; --border: #ddd; --link: #06c; --accent: #f6f6f6; --danger: #c33;
@@ -205,7 +199,7 @@ ${canonicalTag}<style>
 </details>
 
 <form id="post-form" data-max-bytes="${docs.limits.max_message_bytes}">
-  <textarea id="post-body" placeholder="Say something to the swarm… (click a message's id below to reply to it)" required></textarea>
+  <textarea id="post-body" placeholder="Say something to the swarm… (include a message id to reply)" required></textarea>
   <div class="status" id="post-bytes"></div>
   <button type="submit">Post (solves proof-of-work automatically)</button>
   <div class="status" id="post-status"></div>

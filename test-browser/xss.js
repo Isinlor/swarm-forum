@@ -89,7 +89,7 @@ test(
 );
 
 test(
-  'the browser wiring — reply insertion, id search, poster click — works end to end',
+  'the browser wiring — message search, replies, and poster search — works end to end',
   { skip: chromium ? false : 'playwright not installed — see the comment at the top of this file' },
   async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-browser-test-'));
@@ -117,13 +117,13 @@ test(
       const originalId = await page.getAttribute('#messages li.msg:first-child', 'data-id');
       const originalPoster = await page.getAttribute('#messages li.msg:first-child .poster', 'data-poster');
 
-      // Clicking a message's id inserts a /m/<id> reference (the reply
-      // convention) into the compose box, live-wired via /client.js.
+      // Clicking a message id runs the paid search used for all
+      // specific-message retrieval instead of navigating to a direct route.
       await page.click('#messages li.msg:first-child .msg-id');
-      const composed = await page.inputValue('#post-body');
-      assert.ok(composed.startsWith(`/m/${originalId}`));
+      await page.waitForFunction(() => /result\(s\)/.test(document.getElementById('search-status').textContent), { timeout: 20000 });
+      assert.equal(await page.inputValue('#search-q'), originalId);
 
-      await page.fill('#post-body', `${composed}a reply`);
+      await page.fill('#post-body', `${originalId} a reply`);
       await page.click('#post-form button[type=submit]');
       await page.waitForFunction(() => document.getElementById('post-status').textContent === 'posted.', { timeout: 20000 });
 
@@ -141,63 +141,6 @@ test(
       await page.waitForFunction(() => /result\(s\)/.test(document.getElementById('search-status').textContent), { timeout: 20000 });
       const posterFieldValue = await page.inputValue('#search-poster');
       assert.equal(posterFieldValue, originalPoster);
-    } finally {
-      if (browser) await browser.close();
-      server.close();
-      fs.rmSync(dataDir, { recursive: true, force: true });
-    }
-  },
-);
-
-test(
-  'a permalink page keeps showing its own message instead of being replaced by the live-poll feed',
-  { skip: chromium ? false : 'playwright not installed — see the comment at the top of this file' },
-  async () => {
-    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-forum-browser-test-'));
-    const server = createServer({
-      dataDir,
-      dbFile: path.join(dataDir, 'db.sqlite'),
-      port: 0,
-      powSecret: 'browser-test',
-      posterSecret: 'browser-test-poster',
-      baseDifficulty: { search: 2, post: 2 },
-      maxDifficulty: { search: 10, post: 10 },
-    });
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const base = `http://127.0.0.1:${server.address().port}`;
-
-    let browser;
-    try {
-      browser = await chromium.launch();
-      const posterPage = await browser.newPage();
-      await posterPage.goto(base + '/');
-      await posterPage.fill('#post-body', 'permalink target');
-      await posterPage.click('#post-form button[type=submit]');
-      await posterPage.waitForFunction(
-        () => document.getElementById('post-status').textContent === 'posted.',
-        { timeout: 20000 },
-      );
-      const targetId = await posterPage.getAttribute('#messages li.msg:first-child', 'data-id');
-
-      const permalinkPage = await browser.newPage();
-      await permalinkPage.goto(`${base}/m/${targetId}`);
-      const initialIds = await permalinkPage.$$eval('#messages li.msg', (els) => els.map((el) => el.dataset.id));
-      assert.deepEqual(initialIds, [targetId]);
-
-      // Post a second message from another tab, then wait past the front
-      // page's 8-second live-poll interval. A permalink page that (bug)
-      // polls unconditionally would prepend it and stop looking like a
-      // permalink.
-      await posterPage.fill('#post-body', 'a newer message, unrelated to the permalink');
-      await posterPage.click('#post-form button[type=submit]');
-      await posterPage.waitForFunction(
-        () => document.getElementById('post-status').textContent === 'posted.',
-        { timeout: 20000 },
-      );
-      await permalinkPage.waitForTimeout(9000);
-
-      const idsAfterWait = await permalinkPage.$$eval('#messages li.msg', (els) => els.map((el) => el.dataset.id));
-      assert.deepEqual(idsAfterWait, [targetId]);
     } finally {
       if (browser) await browser.close();
       server.close();

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { leadingZeroBits, pathToId, escapeText, messageRowNode } = require('../src/public/client');
+const { leadingZeroBits, escapeText, messageRowNode } = require('../src/public/client');
 
 test('leadingZeroBits counts bits across every nibble value', () => {
   assert.equal(leadingZeroBits('0000ff'), 16);
@@ -10,15 +10,6 @@ test('leadingZeroBits counts bits across every nibble value', () => {
   assert.equal(leadingZeroBits('8fff'), 0);
   assert.equal(leadingZeroBits('ffff'), 0);
   assert.equal(leadingZeroBits('00000000'), 32);
-});
-
-test('pathToId extracts the id from a /m/<id> path, or returns the input unchanged', () => {
-  const id = '01890a5d-ac96-774b-bcce-b302099a8057';
-  assert.equal(pathToId(`/m/${id}`), id);
-  assert.equal(pathToId(`https://other.example/forum/m/${id}`), id);
-  assert.equal(pathToId('/'), '/');
-  assert.equal(pathToId(''), '');
-  assert.equal(pathToId(undefined), undefined);
 });
 
 test('escapeText only ever sets textContent, never innerHTML', () => {
@@ -73,7 +64,7 @@ test('messageRowNode builds the expected tree and puts the body through textCont
 
   const [idLink, time, poster] = meta.children;
   assert.equal(idLink.className, 'msg-id');
-  assert.equal(idLink.href, '/m/id-1');
+  assert.equal(idLink.href, '/search?q=id-1');
   assert.equal(idLink.dataset.id, 'id-1');
   assert.equal(idLink.textContent, 'id-1');
 
@@ -90,9 +81,9 @@ test('messageRowNode builds the expected tree and puts the body through textCont
   assert.equal(body.textContent, message.message);
 });
 
-test('messageRowNode percent-encodes the id in the permalink href', () => {
+test('messageRowNode percent-encodes the id in the search href', () => {
   const doc = createStubDocument();
   const li = messageRowNode(doc, { id: 'a b', message: 'x', created_at: 'y', poster: 'z' });
   const idLink = li.children[0].children[0];
-  assert.equal(idLink.href, '/m/a%20b');
+  assert.equal(idLink.href, '/search?q=a%20b');
 });

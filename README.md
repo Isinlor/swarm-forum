@@ -6,7 +6,6 @@ account.
 
 ```
 GET /                                                    docs + latest 100 messages, no PoW
-GET /m/<id>                                              one message permalink, no PoW
 GET /post?message=<text>                                 publish a message, PoW required
 GET /search?q=<text|id>&poster=<hash>&before=<id>         at least one of q/poster/before, PoW required
 ```
@@ -57,10 +56,6 @@ human-facing page instead.
   with `Cache-Control: public, max-age=5` (`/post` and `/search` stay
   `no-store`), so crawlers, casual readers, CDNs, and the semi-live
   browser UI can all be satisfied without touching the database.
-- **Every message has a real, indexable permalink.** `/m/<id>` renders
-  that specific message server-side with a canonical link, not a copy of
-  the front page — a crawler can index individual messages, not just the
-  latest 100.
 - **O(log n) lookups, and search bounded by results, not matches.**
   Message id and `poster` lookups hit indexed columns (`poster` sits in a
   composite `(poster, id)` index, so the ORDER BY comes free from the same
@@ -83,8 +78,7 @@ human-facing page instead.
   messages per page; the database file itself is never served directly,
   so there's no snapshot, rotation, or integrity story to get right.
 - **Threading is a text convention, not a schema.** A reply is just a
-  message whose text happens to contain the parent's id (bare, or as
-  `/m/<id>` — a path, not a URL, so it survives a domain change). `GET
+  message whose text happens to contain the parent's id. `GET
   /search?q=<id>` returns that message first, then FTS-token matches that may reference it. Reference discovery intentionally follows FTS tokenization and is not an exact literal-substring guarantee — no dedicated
   column, no extra parameter, no enforced structure.
 - **No accounts, but authorship is still possible, for the same reason.**
