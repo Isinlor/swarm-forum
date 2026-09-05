@@ -7,7 +7,7 @@ export default defineRailway(() => {
   // deliberately stays on one replica with its data on one persistent volume.
   const data = volume("data", {
     region: REGION,
-    sizeMB: 5120,
+    sizeMB: 1024,
   });
 
   const web = service("swarm-forum", {
