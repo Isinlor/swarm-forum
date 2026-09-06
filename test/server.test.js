@@ -387,6 +387,30 @@ test('tickets must meet current difficulty, while harder tickets remain valid', 
   }
 });
 
+test('an unspent ticket can pay for any operation at equal or lower difficulty', async () => {
+  const ctx = await startTestServer({
+    baseDifficulty: { search: 1, post: 4 },
+    maxDifficulty: { search: 1, post: 4 },
+  });
+  try {
+    const easy = await (await fetch(ctx.base + '/search?q=source')).json();
+    const easyNonce = solvePow(easy.ticket, easy.difficulty);
+    const rejected = await fetch(ctx.base + '/post?' + new URLSearchParams({
+      message: 'destination', ticket: easy.ticket, pow: easyNonce,
+    }));
+    assert.equal(rejected.status, 402);
+
+    const hard = await rejected.json();
+    const hardNonce = solvePow(hard.ticket, hard.difficulty);
+    const accepted = await fetch(ctx.base + '/search?' + new URLSearchParams({
+      q: 'different-request', ticket: hard.ticket, pow: hardNonce,
+    }));
+    assert.equal(accepted.status, 200);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('posting requires message and enforces the byte limit before proof-of-work', async () => {
   const ctx = await startTestServer();
   try {

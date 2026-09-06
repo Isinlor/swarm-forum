@@ -6,15 +6,6 @@ const TICKET_LIFETIME_MS = 600_000;
 const SIGNATURE_RE = /^[A-Za-z0-9_-]{43}$/;
 const ENCODED_RE = /^[A-Za-z0-9_-]+$/;
 
-function canonicalRequest(pathname, searchParams) {
-  const entries = [...searchParams.entries()]
-    .filter(([key]) => key !== 'pow' && key !== 'ticket')
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const qs = entries.map(([key, value]) =>
-    `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join('&');
-  return qs ? `${pathname}?${qs}` : pathname;
-}
-
 function leadingZeroBits(hexDigest) {
   let bits = 0;
   for (const character of hexDigest) {
@@ -35,10 +26,9 @@ function signature(secret, encoded) {
   return crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
 }
 
-function issueTicket(secret, pathname, searchParams, difficulty, options = {}) {
+function issueTicket(secret, difficulty, options = {}) {
   const now = options.now ?? Date.now();
   const payload = {
-    r: crypto.createHash('sha256').update(canonicalRequest(pathname, searchParams)).digest('base64url'),
     d: difficulty,
     e: now + (options.lifetimeMs ?? TICKET_LIFETIME_MS),
     j: crypto.randomBytes(16).toString('base64url'),
@@ -66,21 +56,17 @@ function authenticateTicket(secret, ticket) {
   return payload && typeof payload.j === 'string' ? payload : null;
 }
 
-function verifyAuthenticatedTicket(pathname, searchParams, ticket, nonce, payload, options = {}) {
+function verifyAuthenticatedTicket(ticket, nonce, payload, options = {}) {
   if (!payload || typeof nonce !== 'string' || nonce.length === 0 || nonce.length > 128) return null;
   const now = options.now ?? Date.now();
-  const requestHash = crypto.createHash('sha256')
-    .update(canonicalRequest(pathname, searchParams)).digest('base64url');
-  if (!payload || payload.r !== requestHash ||
-      !Number.isInteger(payload.d) || payload.d < 0 || payload.d > 256 ||
+  if (!Number.isInteger(payload.d) || payload.d < 0 || payload.d > 256 ||
       !Number.isFinite(payload.e) || payload.e <= now || typeof payload.j !== 'string' ||
       !meetsDifficulty(ticket, nonce, payload.d)) return null;
   return payload;
 }
 
-function verifyTicket(secret, pathname, searchParams, ticket, nonce, options = {}) {
-  return verifyAuthenticatedTicket(pathname, searchParams, ticket, nonce,
-    authenticateTicket(secret, ticket), options);
+function verifyTicket(secret, ticket, nonce, options = {}) {
+  return verifyAuthenticatedTicket(ticket, nonce, authenticateTicket(secret, ticket), options);
 }
 
 function createTicketStore(lifetimeMs = TICKET_LIFETIME_MS) {
@@ -104,5 +90,5 @@ function createTicketStore(lifetimeMs = TICKET_LIFETIME_MS) {
   };
 }
 
-module.exports = { TICKET_LIFETIME_MS, canonicalRequest, leadingZeroBits, meetsDifficulty,
+module.exports = { TICKET_LIFETIME_MS, leadingZeroBits, meetsDifficulty,
   issueTicket, authenticateTicket, verifyAuthenticatedTicket, verifyTicket, createTicketStore };
