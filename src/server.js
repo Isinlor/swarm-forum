@@ -233,21 +233,20 @@ function createServer(overrides = {}) {
     const ticket = url.searchParams.get('ticket');
     const authenticated = pow.authenticateTicket(signingSecret, ticket);
     // Authentication makes the id trustworthy; checking replay here avoids
-    // request hashing and attacker-selected proof verification for spent work.
+    // attacker-selected proof verification for spent work.
     if (authenticated && tickets.has(authenticated.j)) {
       sendJson(res, 409, { error: 'ticket_already_used' });
       return null;
     }
     const nonce = url.searchParams.get('pow');
-    const verified = pow.verifyAuthenticatedTicket(url.pathname, url.searchParams,
-      ticket, nonce, authenticated, { now });
+    const verified = pow.verifyAuthenticatedTicket(ticket, nonce, authenticated, { now });
     const difficultyValue = difficulty.get(endpoint, now);
     // A signed ticket proves what difficulty was advertised, but an old easy
     // ticket must not become a way to bypass a load-driven increase. Tickets
     // from a harder period remain valid when pressure falls.
     if (verified && verified.d >= difficultyValue) return verified;
-    const challenge = pow.issueTicket(signingSecret, url.pathname, url.searchParams,
-      difficultyValue, { now, lifetimeMs: config.powWindowSeconds * 1000 });
+    const challenge = pow.issueTicket(signingSecret, difficultyValue,
+      { now, lifetimeMs: config.powWindowSeconds * 1000 });
     sendJson(res, 402, { error: 'proof_of_work_required', ...challenge });
     return null;
   }

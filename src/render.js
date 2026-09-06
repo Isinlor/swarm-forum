@@ -55,10 +55,10 @@ function buildDocs(config) {
     proof_of_work: {
       how: 'Call the endpoint once. If it replies 402, the body carries {ticket, difficulty, expires_at, ' +
         'expires_in, algorithm}. Find any string `nonce` such that hex(sha256(ticket + ":" + nonce)) has at ' +
-        'least `difficulty` leading zero BITS (not hex digits). Repeat the exact same request with ' +
-        '`&ticket=<ticket>&pow=<nonce>` appended. The ticket authenticates the canonical request, ' +
-        'difficulty and expiry. The ticket difficulty must be at least the difficulty currently required; ' +
-        'harder tickets remain valid if pressure falls. Cheap request validation runs before this exchange. ' +
+        'least `difficulty` leading zero BITS (not hex digits). Send any valid protected request with ' +
+        '`ticket=<ticket>&pow=<nonce>` appended. The ticket authenticates its difficulty and expiry, not a ' +
+        'specific request. Its difficulty must be at least the difficulty currently required by the chosen ' +
+        'operation, so an unspent harder ticket can pay for any equal- or lower-difficulty operation. Cheap request validation runs before this exchange. ' +
         'Tickets are consumed when a valid request reaches rate-limited or database work; the random per-boot signing key rejects pre-restart tickets. Tickets are ' +
         'deliberately not IP-bound because agents may traverse proxies whose exit address changes between ' +
         'challenge and retry. Tickets are bearer credentials and can be transferred before use.',
